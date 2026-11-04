@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>NEXUS — Painel local</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">N</span><div><strong>NEXUS</strong><small>LOCAL COGNITIVE SYSTEM</small></div></div>
+    <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-label">desconectado</span></div>
+    <div class="credentials">
+      <label for="api-token">Token local</label>
+      <input id="api-token" type="password" autocomplete="off" placeholder="nexus_…">
+      <button id="save-token" class="button quiet">Conectar</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <p class="eyebrow">ESPAÇO DE TRABALHO</p>
+      <button class="nav-item active" data-panel="overview"><span>◈</span> Visão geral</button>
+      <button class="nav-item" data-panel="tasks"><span>✳</span> Tarefas</button>
+      <button class="nav-item" data-panel="memory"><span>▤</span> Memória</button>
+      <button class="nav-item" data-panel="events"><span>⌁</span> Eventos</button>
+      <button class="nav-item" data-panel="models"><span>◉</span> Modelos</button>
+      <button class="nav-item" data-panel="automation"><span>⌘</span> Diagnósticos</button>
+      <button class="nav-item" data-panel="logs"><span>≋</span> Logs</button>
+      <button class="nav-item" data-panel="config"><span>⚙</span> Configuração</button>
+      <div class="sidebar-bottom"><span class="pulse"></span><span>Processamento local</span></div>
+    </aside>
+
+    <main>
+      <section class="panel active" id="panel-overview">
+        <div class="page-heading"><div><p class="eyebrow">SISTEMA</p><h1>Visão geral</h1></div><button id="refresh" class="button quiet">Atualizar</button></div>
+        <div id="notice" class="notice" role="status"></div>
+        <div class="cards">
+          <article class="card"><p class="eyebrow">ESTADO</p><strong id="status-value">—</strong><small id="status-detail">Conecte com o token local</small></article>
+          <article class="card"><p class="eyebrow">AUTONOMIA</p><strong id="autonomy-value">—</strong><small id="autonomy-detail">permissões efetivas</small></article>
+          <article class="card"><p class="eyebrow">EVENTOS</p><strong id="events-value">—</strong><small>persistidos em SQLite</small></article>
+          <article class="card"><p class="eyebrow">MEMÓRIAS</p><strong id="memory-value">—</strong><small>registros locais</small></article>
+        </div>
+        <article class="surface monitor-surface"><div class="surface-heading"><h2>Monitor do sistema · Sentinel</h2><span id="sentinel-state" class="badge">aguardando</span></div><pre id="sentinel-summary" class="result-content">O serviço Rust publica métricas Linux quando está ativo.</pre></article>
+        <div class="columns">
+          <article class="surface"><div class="surface-heading"><h2>Provedores LLM</h2><button class="text-button" data-goto="models">Ver modelos</button></div><div id="provider-summary" class="empty">Nenhum estado carregado.</div></article>
+          <article class="surface"><div class="surface-heading"><h2>Atividade recente</h2><button class="text-button" data-goto="events">Ver eventos</button></div><div id="recent-events" class="event-list empty">Conecte para carregar.</div></article>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-tasks">
+        <div class="page-heading"><div><p class="eyebrow">COGNIÇÃO</p><h1>Tarefas</h1></div></div>
+        <div class="task-grid">
+          <form id="task-form" class="surface task-form">
+            <label for="task-kind">Tipo de tarefa</label>
+            <select id="task-kind"><option value="reasoning">Raciocínio</option><option value="planning">Planejamento</option><option value="summary">Resumo</option></select>
+            <label for="task-model">Modelo</label>
+            <select id="task-model"><option value="">Automático, conforme a cadeia configurada</option></select>
+            <label for="task-system">Instrução de sistema <span>opcional</span></label>
+            <textarea id="task-system" rows="3" placeholder="Defina o contexto e o formato de resposta"></textarea>
+            <label for="task-prompt">Solicitação</label>
+            <textarea id="task-prompt" rows="8" required placeholder="O que você quer que o NEXUS analise?"></textarea>
+            <div class="form-footer"><small>As respostas são registradas como metadados; prompts não são armazenados.</small><div><button id="notifications-enable" class="button quiet" type="button">Ativar notificações</button> <button class="button primary" type="submit">Executar tarefa <span>↗</span></button></div></div>
+          </form>
+          <article class="surface result-card"><div class="surface-heading"><h2>Resultado</h2><span id="task-state" class="badge">aguardando</span></div><pre id="task-result" class="result-content">A saída do modelo aparece aqui. Nenhuma ação do sistema é executada.</pre><div id="task-meta" class="meta"></div></article>
+        </div>
+        <article class="surface history-surface"><div class="surface-heading"><h2>Atividade de tarefas</h2><button id="tasks-refresh" class="text-button">Atualizar</button></div><div id="task-history" class="event-list empty">Conecte para carregar.</div></article>
+      </section>
+
+      <section class="panel" id="panel-memory">
+        <div class="page-heading"><div><p class="eyebrow">PERSISTÊNCIA</p><h1>Memória</h1></div><button id="memory-refresh" class="button quiet">Atualizar</button></div>
+        <div class="memory-grid">
+          <form id="memory-search-form" class="surface search-row"><input id="memory-query" placeholder="Buscar termos na memória"><select id="memory-filter"><option value="">Todos os tipos</option><option value="short_term">Curto prazo</option><option value="long_term">Longo prazo</option><option value="episodic">Episódica</option><option value="semantic">Semântica</option></select><button class="button quiet" type="submit">Buscar</button></form>
+          <form id="memory-add-form" class="surface memory-add"><h2>Salvar uma memória</h2><label for="memory-kind">Tipo</label><select id="memory-kind"><option value="long_term">Longo prazo</option><option value="short_term">Curto prazo</option><option value="episodic">Episódica</option><option value="semantic">Semântica</option></select><label for="memory-title">Título</label><input id="memory-title" maxlength="4096"><label for="memory-content">Conteúdo</label><textarea id="memory-content" rows="4" required></textarea><button class="button primary" type="submit">Salvar memória</button></form>
+          <div id="memory-list" class="memory-list"><div class="empty">Conecte para carregar.</div></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-events">
+        <div class="page-heading"><div><p class="eyebrow">AUDITORIA</p><h1>Eventos</h1></div><button id="events-refresh" class="button quiet">Atualizar</button></div>
+        <div id="event-list" class="surface event-list"><div class="empty">Conecte para carregar.</div></div>
+      </section>
+
+      <section class="panel" id="panel-models">
+        <div class="page-heading"><div><p class="eyebrow">INFRAESTRUTURA DE IA</p><h1>Modelos e provedores</h1></div><button id="models-refresh" class="button quiet">Verificar provedores</button></div>
+        <div id="models-list" class="model-list"><div class="empty">Conecte para carregar.</div></div>
+        <article class="surface usage-surface"><h2>Uso nesta sessão do runtime</h2><div id="usage-list" class="empty">Nenhum uso registrado.</div></article>
+      </section>
+
+      <section class="panel" id="panel-automation">
+        <div class="page-heading"><div><p class="eyebrow">AUTOMAÇÃO CONTROLADA</p><h1>Diagnósticos</h1></div><button id="automation-refresh" class="button quiet">Atualizar</button></div>
+        <div id="automation-notice" class="notice" role="status"></div>
+        <div id="automation-list" class="model-list"><div class="empty">Conecte para carregar.</div></div>
+        <article class="surface result-card"><div class="surface-heading"><h2>Saída do diagnóstico</h2><span id="automation-state" class="badge">aguardando</span></div><pre id="automation-result" class="result-content">Somente diagnósticos fixos de leitura são disponibilizados.</pre></article>
+      </section>
+
+      <section class="panel" id="panel-logs">
+        <div class="page-heading"><div><p class="eyebrow">AUDITORIA LOCAL</p><h1>Logs</h1></div><button id="logs-refresh" class="button quiet">Atualizar</button></div>
+        <pre id="log-content" class="surface log-content">Conecte para carregar.</pre>
+      </section>
+
+      <section class="panel" id="panel-config">
+        <div class="page-heading"><div><p class="eyebrow">PREFERÊNCIAS EFETIVAS</p><h1>Configuração</h1></div><button id="config-refresh" class="button quiet">Atualizar</button></div>
+        <pre id="config-content" class="surface log-content">Conecte para carregar.</pre>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

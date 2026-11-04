@@ -1,0 +1,308 @@
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const state = { token: sessionStorage.getItem("nexus-token") || "" };
+  const tokenInput = $("api-token");
+  tokenInput.value = state.token;
+
+  function notice(message, isError = false) {
+    const node = $("notice");
+    node.textContent = message;
+    node.className = `notice visible${isError ? " error" : ""}`;
+    window.clearTimeout(notice.timer);
+    notice.timer = window.setTimeout(() => { node.className = "notice"; }, 5500);
+  }
+
+  async function api(path, options = {}) {
+    if (!state.token) throw new Error("Informe o token local para continuar.");
+    const response = await fetch(path, {
+      ...options,
+      headers: {
+        "Authorization": `Bearer ${state.token}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    return data;
+  }
+
+  function setConnection(connected, label) {
+    $("connection-dot").classList.toggle("online", connected);
+    $("connection-label").textContent = label;
+  }
+
+  function textNode(tag, text, className) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  async function refreshOverview() {
+    const data = await api("/api/v1/status");
+    $("status-value").textContent = data.status;
+    $("status-detail").textContent = `${data.name} · ${data.version} · ${data.environment}`;
+    $("autonomy-value").textContent = `${data.autonomy.level} / 4`;
+    $("autonomy-detail").textContent = data.autonomy.name;
+    $("events-value").textContent = String(data.events.total);
+    $("memory-value").textContent = String(data.memory.total || 0);
+    $("sentinel-state").textContent = data.sentinel?.connected ? "online" : "offline";
+    const sample = data.sentinel?.sample;
+    $("sentinel-summary").textContent = sample
+      ? JSON.stringify(sample, null, 2)
+      : "Sem amostra recente. Inicie o serviço nexus-sentinel para ativar monitoramento Linux.";
+    setConnection(true, data.sentinel?.connected ? "API + Sentinel conectados" : "API conectada");
+    await Promise.all([refreshRecentEvents(), refreshProviderSummary(), refreshModels()]);
+  }
+
+  async function refreshRecentEvents() {
+    const data = await api("/api/v1/events?limit=6");
+    renderEvents($("recent-events"), data.items);
+  }
+
+  function renderEvents(target, items) {
+    target.replaceChildren();
+    if (!items.length) {
+      target.append(textNode("div", "Nenhum evento registrado.", "empty"));
+      return;
+    }
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "event-row";
+      row.append(
+        textNode("time", new Date(item.created_at).toLocaleTimeString()),
+        textNode("span", item.kind, "event-kind"),
+        textNode("code", item.severity),
+      );
+      target.append(row);
+    }
+  }
+
+  async function refreshEvents() {
+    const data = await api("/api/v1/events?limit=100");
+    renderEvents($("event-list"), data.items);
+  }
+
+  async function refreshProviderSummary() {
+    const data = await api("/api/v1/models");
+    const target = $("provider-summary");
+    target.replaceChildren();
+    const enabled = data.providers.filter((provider) => provider.enabled);
+    if (!enabled.length) {
+      target.append(textNode("div", "Nenhum provedor habilitado.", "empty"));
+      return;
+    }
+    for (const provider of enabled) {
+      const row = document.createElement("div");
+      row.className = "usage-line";
+      row.append(textNode("span", provider.name), textNode("span", provider.health.ok ? "online" : "indisponível"));
+      target.append(row);
+    }
+  }
+
+  async function refreshModels() {
+    const data = await api("/api/v1/models");
+    const routes = data.routes || [];
+    const enabled = new Set(data.providers.filter((provider) => provider.enabled && provider.authorized).map((provider) => provider.name));
+    const selectModel = $("task-model");
+    const selectedRoute = selectModel.value;
+    selectModel.replaceChildren(new Option("Automático, conforme a cadeia configurada", ""));
+    for (const route of routes) {
+      if (!enabled.has(route.provider)) continue;
+      const option = new Option(`${route.model} · ${route.provider}${route.task ? ` · ${route.task}` : ""}`, JSON.stringify({ provider: route.provider, model: route.model }));
+      if (route.task && route.task !== $("task-kind").value) option.disabled = true;
+      selectModel.add(option);
+    }
+    if ([...selectModel.options].some((option) => option.value === selectedRoute && !option.disabled)) selectModel.value = selectedRoute;
+    const target = $("models-list");
+    target.replaceChildren();
+    for (const provider of data.providers) {
+      const card = document.createElement("article");
+      card.className = "model-card";
+      const header = document.createElement("header");
+      header.append(textNode("strong", provider.name), textNode("span", provider.health.ok ? "online" : (provider.health.state || "indisponível"), "badge"));
+      card.append(header);
+      card.append(textNode("p", `${provider.kind} · ${provider.authorized ? "autorizado" : "não autorizado"}`));
+      card.append(textNode("p", `Configurados: ${provider.configured_models.join(", ") || "nenhum"}`));
+      card.append(textNode("p", `Encontrados: ${provider.discovered_models.join(", ") || "—"}`));
+      card.append(textNode("p", `Recursos do protocolo: ${Object.entries(provider.capabilities).filter(([, value]) => value).map(([key]) => key).join(", ") || "—"}`));
+      target.append(card);
+    }
+    const usage = $("usage-list");
+    usage.replaceChildren();
+    const entries = Object.entries(data.usage);
+    if (!entries.length) usage.append(textNode("div", "Nenhum uso registrado.", "empty"));
+    for (const [model, counts] of entries) {
+      const line = document.createElement("div");
+      line.className = "usage-line";
+      line.append(textNode("span", model), textNode("span", `${counts.requests} req · ${counts.prompt_tokens + counts.completion_tokens} tokens · $${Number(counts.estimated_cost_usd).toFixed(6)}`));
+      usage.append(line);
+    }
+  }
+
+  async function refreshTaskHistory() {
+    const data = await api("/api/v1/events?limit=200");
+    const items = data.items.filter((event) => event.kind.startsWith("agent.task."));
+    const target = $("task-history");
+    renderEvents(target, items);
+  }
+
+  async function refreshAutomation() {
+    const data = await api("/api/v1/automation/actions");
+    const target = $("automation-list");
+    target.replaceChildren();
+    if (!data.items.length) target.append(textNode("div", "Nenhum diagnóstico disponível.", "empty"));
+    for (const action of data.items) {
+      const card = document.createElement("article");
+      card.className = "model-card";
+      const heading = document.createElement("header");
+      heading.append(textNode("strong", action.action_id), textNode("span", action.allowed ? "permitido" : `exige autonomia ${action.required_autonomy}`, "badge"));
+      card.append(heading, textNode("p", action.description));
+      const button = textNode("button", "Executar diagnóstico");
+      button.className = "button quiet";
+      button.type = "button";
+      button.disabled = !action.allowed;
+      button.addEventListener("click", async () => {
+        $("automation-state").textContent = "executando";
+        try {
+          const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.action_id)}`, { method: "POST" });
+          $("automation-result").textContent = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}\n\ncódigo ${result.exit_code} · ${result.duration_ms} ms`;
+          $("automation-state").textContent = "concluído";
+        } catch (error) {
+          $("automation-result").textContent = error.message;
+          $("automation-state").textContent = "indisponível";
+        }
+      });
+      card.append(button);
+      target.append(card);
+    }
+  }
+
+  async function refreshLogs() {
+    const data = await api("/api/v1/logs?lines=500");
+    $("log-content").textContent = data.items.join("\n") || "Log ainda vazio.";
+  }
+
+  async function refreshConfig() {
+    const data = await api("/api/v1/config");
+    $("config-content").textContent = JSON.stringify(data, null, 2);
+  }
+
+  async function refreshMemories(query = "") {
+    const kind = $("memory-filter").value;
+    const params = new URLSearchParams({ limit: "100" });
+    if (kind) params.set("kind", kind);
+    const url = query ? `/api/v1/memories/search?q=${encodeURIComponent(query)}&${params}` : `/api/v1/memories?${params}`;
+    const data = await api(url);
+    const target = $("memory-list");
+    target.replaceChildren();
+    if (!data.items.length) target.append(textNode("div", "Nenhuma memória encontrada.", "empty"));
+    for (const item of data.items) {
+      const card = document.createElement("article");
+      card.className = "surface memory-card";
+      card.append(textNode("h3", item.title || item.kind));
+      card.append(textNode("p", item.content));
+      const meta = document.createElement("div");
+      meta.className = "memory-meta";
+      meta.append(textNode("span", `${item.kind} · ${new Date(item.created_at).toLocaleString()}`));
+      const remove = textNode("button", "Apagar");
+      remove.className = "delete";
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm("Apagar esta memória permanentemente?")) return;
+        try { await api(`/api/v1/memories/${encodeURIComponent(item.memory_id)}`, { method: "DELETE" }); await refreshMemories(query); notice("Memória apagada."); }
+        catch (error) { notice(error.message, true); }
+      });
+      meta.append(remove);
+      card.append(meta);
+      target.append(card);
+    }
+  }
+
+  $("save-token").addEventListener("click", async () => {
+    state.token = tokenInput.value.trim();
+    if (!state.token) { sessionStorage.removeItem("nexus-token"); setConnection(false, "token necessário"); return; }
+    sessionStorage.setItem("nexus-token", state.token);
+    try { await refreshOverview(); notice("Conexão local estabelecida."); }
+    catch (error) { setConnection(false, "falha de autenticação"); notice(error.message, true); }
+  });
+
+  $("refresh").addEventListener("click", () => refreshOverview().catch((error) => notice(error.message, true)));
+  $("events-refresh").addEventListener("click", () => refreshEvents().catch((error) => notice(error.message, true)));
+  $("models-refresh").addEventListener("click", () => refreshModels().catch((error) => notice(error.message, true)));
+  $("memory-refresh").addEventListener("click", () => refreshMemories().catch((error) => notice(error.message, true)));
+  $("tasks-refresh").addEventListener("click", () => refreshTaskHistory().catch((error) => notice(error.message, true)));
+  $("automation-refresh").addEventListener("click", () => refreshAutomation().catch((error) => notice(error.message, true)));
+  $("logs-refresh").addEventListener("click", () => refreshLogs().catch((error) => notice(error.message, true)));
+  $("config-refresh").addEventListener("click", () => refreshConfig().catch((error) => notice(error.message, true)));
+  $("task-kind").addEventListener("change", () => refreshModels().catch((error) => notice(error.message, true)));
+  $("notifications-enable").addEventListener("click", async () => {
+    if (!("Notification" in window)) { notice("Este navegador não oferece notificações locais.", true); return; }
+    const permission = await Notification.requestPermission();
+    notice(permission === "granted" ? "Notificações ativadas." : "Permissão de notificação não concedida.", permission !== "granted");
+  });
+
+  document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelectorAll(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === `panel-${button.dataset.panel}`));
+    if (button.dataset.panel === "events") refreshEvents().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "models") refreshModels().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "memory") refreshMemories().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "tasks") refreshTaskHistory().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "automation") refreshAutomation().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "logs") refreshLogs().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "config") refreshConfig().catch((error) => notice(error.message, true));
+  }));
+  document.querySelectorAll("[data-goto]").forEach((button) => button.addEventListener("click", () => document.querySelector(`[data-panel="${button.dataset.goto}"]`).click()));
+
+  $("task-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("task-state").textContent = "executando";
+    $("task-state").className = "badge busy";
+    $("task-result").textContent = "Aguardando o provedor configurado…";
+    $("task-meta").textContent = "";
+    try {
+      const selection = $("task-model").value ? JSON.parse($("task-model").value) : {};
+      const result = await api("/api/v1/tasks", { method: "POST", body: JSON.stringify({
+        task: $("task-kind").value,
+        prompt: $("task-prompt").value,
+        system: $("task-system").value || null,
+        ...selection,
+      }) });
+      $("task-result").textContent = result.completion.text;
+      $("task-state").textContent = "concluída";
+      $("task-state").className = "badge done";
+      $("task-meta").textContent = `${result.completion.provider}/${result.completion.model} · ${result.completion.latency_ms} ms · ${result.completion.prompt_tokens ?? "?"}/${result.completion.completion_tokens ?? "?"} tokens · custo ${result.completion.estimated_cost_usd ?? "não configurado"}`;
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification("NEXUS · tarefa concluída", { body: `${result.completion.provider}/${result.completion.model}` });
+      }
+      await refreshOverview();
+      await refreshTaskHistory();
+    } catch (error) {
+      $("task-result").textContent = error.message;
+      $("task-state").textContent = "falhou";
+      $("task-state").className = "badge error";
+    }
+  });
+
+  $("memory-search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    refreshMemories($("memory-query").value).catch((error) => notice(error.message, true));
+  });
+  $("memory-add-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await api("/api/v1/memories", { method: "POST", body: JSON.stringify({
+        kind: $("memory-kind").value,
+        title: $("memory-title").value,
+        content: $("memory-content").value,
+      }) });
+      $("memory-content").value = "";
+      await refreshMemories();
+      notice("Memória salva.");
+    } catch (error) { notice(error.message, true); }
+  });
+
+  if (state.token) refreshOverview().catch(() => setConnection(false, "falha de autenticação"));
+})();

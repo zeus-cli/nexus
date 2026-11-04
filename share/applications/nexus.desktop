@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=NEXUS
+GenericName=Painel cognitivo local
+Comment=Abra o painel local do NEXUS
+Exec=nexus desktop
+Icon=nexus
+Terminal=false
+Categories=Utility;System;
+StartupNotify=true

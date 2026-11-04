@@ -1,0 +1,29 @@
+[Unit]
+Description=NEXUS — camada cognitiva local-first (núcleo)
+Documentation=file:///home/nexus/Documentos/nexus/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Instalação como serviço de usuário (systemctl --user). Não requer root.
+WorkingDirectory=%h/Documentos/nexus
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=%h/Documentos/nexus
+ExecStart=%h/Documentos/nexus/.venv/bin/python -m nexus_core serve --config %h/Documentos/nexus/config/nexus.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+# Endurecimento básico: o núcleo não precisa de escrita fora do projeto.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Documentos/nexus/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

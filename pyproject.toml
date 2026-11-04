@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-core"
+version = "0.2.0"
+description = "NEXUS — camada cognitiva local-first (fundação + API local)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "websockets>=12",
+  "httpx>=0.27",
+]
+
+[project.scripts]
+nexus = "nexus_core.cli:main"
+
+[tool.setuptools]
+packages = ["nexus_core", "nexus_core.memory", "nexus_core.api", "nexus_core.llm_router", "nexus_core.web"]
+
+[tool.setuptools.package-data]
+nexus_core = ["web/*.html", "web/*.css", "web/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

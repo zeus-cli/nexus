@@ -1,0 +1,68 @@
+[nexus]
+name = "NEXUS"
+environment = "production"
+
+# Perfil: Notebook (i3, 12GB RAM)
+# Otimizado para evitar swap e garantir fluidez do frontend.
+
+[paths]
+data_dir = "data"
+
+[logging]
+level = "INFO"
+json = true
+max_bytes = 5242880
+backup_count = 5
+
+[events]
+retention_days = 0 
+dedup_window_hours = 24
+max_payload_bytes = 65536
+query_limit = 50 # Reduzido para evitar lags de I/O no notebook
+
+[api]
+host = "127.0.0.1"
+port = 8765
+token_file = "data/secrets/api_token"
+
+[safety]
+autonomy_level = 1 # Modo Assistência: permite leitura e escrita básica
+
+[llm]
+# Orçamento de contexto reduzido para economizar RAM (evita travamentos com o browser)
+max_context_tokens = 2048
+failure_threshold = 3
+cooldown_s = 60
+max_retries = 1
+
+[[llm.providers]]
+name = "ollama-local"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434"
+models = ["qwen2.5:7b", "llama3.1:8b"]
+enabled = true
+authorized = true
+timeout_s = 120
+input_cost_per_million = 0
+output_cost_per_million = 0
+
+[[llm.providers]]
+name = "compatible-remote"
+kind = "openai_compatible"
+base_url = "https://api.exemplo.invalid/v1"
+models = ["modelo-remoto"]
+enabled = false
+authorized = false
+api_key_env = "NEXUS_LLM_API_KEY"
+
+[[llm.chain]]
+provider = "ollama-local"
+model = "qwen2.5:7b"
+
+[[llm.chain]]
+provider = "ollama-local"
+model = "llama3.1:8b"
+
+[[llm.chain]]
+provider = "compatible-remote"
+model = "modelo-remoto"

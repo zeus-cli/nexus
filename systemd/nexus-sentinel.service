@@ -1,0 +1,25 @@
+[Unit]
+Description=NEXUS — sentinela local de telemetria Linux
+After=nexus-core.service
+Requires=nexus-core.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documentos/nexus
+ExecStart=%h/Documentos/nexus/core-rust/target/release/nexus-sentinel --socket %h/Documentos/nexus/data/run/sentinel.sock
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Documentos/nexus/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target
