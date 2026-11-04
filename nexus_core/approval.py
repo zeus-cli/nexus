@@ -262,19 +262,20 @@ class ApprovalManager:
             row = conn.execute("SELECT * FROM approvals WHERE id = ?", (request_id,)).fetchone()
             return dict(row) if row else None
 
-    
-        def get_history(self, limit: int = 100, status: str | None = None, offset: int = 0) -> list[dict[str, Any]]:
-            """Returns a paginated history of all approval requests and their final states."""
-            sql = "SELECT * FROM approvals"
-            params = []
-            if status:
-                sql += " WHERE status = ?"
-                params.append(status)
-            sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            
-            with sqlite3.connect(self._db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(sql, tuple(params)).fetchall()
-                return [dict(r) for r in rows]
+    def get_history(
+        self, limit: int = 100, status: str | None = None, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Returns a paginated history of all approval requests and their final states."""
+        sql = "SELECT * FROM approvals"
+        params: list[Any] = []
+        if status:
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
     

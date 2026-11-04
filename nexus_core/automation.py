@@ -89,6 +89,10 @@ class AutomationEngine:
         self._approval_manager = approval_manager or ApprovalManager()
         self._policy_engine = policy_engine or PolicyEngine()
 
+    def actions(self) -> list[dict[str, Any]]:
+        """Public catalogue consumed by the CLI, TUI and HTTP API."""
+        return self.list_tools()
+
     def list_tools(self) -> list[dict[str, Any]]:
         return [
             {

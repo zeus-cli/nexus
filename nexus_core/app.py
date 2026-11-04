@@ -26,8 +26,6 @@ from . import __version__
 from .automation import AutomationEngine
 from .reflection import ReflectionEngine
 from .task_store import TaskStore
-from .reflection import ReflectionEngine
-from .task_store import TaskStore
 from .config import AUTONOMY_LEVELS, Config, load_config
 from .cognitive import CognitiveCore
 from .eventbus import EventBus
@@ -58,8 +56,8 @@ class NexusRuntime:
     automation: AutomationEngine
     logger: Any
     started_at: datetime
-    sentinel: SentinelReceiver | None = None
     resources: ResourceManager
+    sentinel: SentinelReceiver | None = None
 
     async def aclose(self) -> None:
         """Close asynchronous provider clients and the SQLite connection."""

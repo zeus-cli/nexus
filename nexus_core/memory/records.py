@@ -124,6 +124,54 @@ class MemoryStore:
         rows = self._db.query("SELECT * FROM memories WHERE memory_id = ?", (memory_id,))
         return self._row_to_record(rows[0]) if rows else None
 
+    def list(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_expired: bool = False,
+    ) -> list[MemoryRecord]:
+        """Lists active records, newest first, optionally filtered by kind."""
+        if kind is not None and kind not in MEMORY_KINDS:
+            raise ValueError(f"kind de memória inválido: {kind!r}")
+        if limit <= 0:
+            raise ValueError("limit deve ser positivo")
+        if offset < 0:
+            raise ValueError("offset não pode ser negativo")
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if not include_expired:
+            clauses.append("(expires_at IS NULL OR expires_at > ?)")
+            params.append(datetime.now(timezone.utc).isoformat())
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._db.query(
+            f"SELECT * FROM memories{where} "
+            "ORDER BY updated_at DESC, memory_id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
+        return [self._row_to_record(row) for row in rows]
+
+    def list_all(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_expired: bool = False,
+    ) -> list[MemoryRecord]:
+        """Backwards-compatible alias for :meth:`list`."""
+        return self.list(
+            kind=kind,
+            limit=limit,
+            offset=offset,
+            include_expired=include_expired,
+        )
+
     def search(
         self,
         query: str,
