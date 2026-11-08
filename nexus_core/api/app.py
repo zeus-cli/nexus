@@ -388,6 +388,7 @@ def create_app(
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
         include_expired: bool = False,
+        include_stats: bool = Query(default=False),
     ) -> dict[str, Any]:
         try:
             records = runtime.memory.list(
@@ -395,7 +396,10 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"items": [record.as_dict() for record in records], "count": len(records)}
+        response: dict[str, Any] = {"items": [record.as_dict() for record in records], "count": len(records)}
+        if include_stats:
+            response["stats"] = runtime.memory.stats()
+        return response
 
     @app.get(f"{API_PREFIX}/memories/search", dependencies=[read])
     async def search_memories(

@@ -54,6 +54,7 @@ h2 { margin: 0; font-size: 15px; font-weight: 620; }
 .notice.visible { display: block; }
 .notice.error { color: var(--danger); border-color: #694040; background: #281617; }
 .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 17px; }
+.memory-kind-cards { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-bottom: 17px; }
 .card, .surface { border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(145deg, #10201b, #0d1815); }
 .card { min-height: 130px; padding: 18px; }
 .card strong { display: block; margin: 12px 0 4px; font-size: 25px; font-weight: 630; }

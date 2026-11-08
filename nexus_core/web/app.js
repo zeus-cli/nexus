@@ -47,6 +47,7 @@
     $("autonomy-detail").textContent = data.autonomy.name;
     $("events-value").textContent = String(data.events.total);
     $("memory-value").textContent = String(data.memory.total || 0);
+    await refreshMemoryStats();
     $("sentinel-state").textContent = data.sentinel?.connected ? "online" : "offline";
     const sample = data.sentinel?.sample;
     $("sentinel-summary").textContent = sample
@@ -191,7 +192,7 @@
 
   async function refreshMemories(query = "") {
     const kind = $("memory-filter").value;
-    const params = new URLSearchParams({ limit: "100" });
+    const params = new URLSearchParams({ limit: "100", include_stats: "true" });
     if (kind) params.set("kind", kind);
     const url = query ? `/api/v1/memories/search?q=${encodeURIComponent(query)}&${params}` : `/api/v1/memories?${params}`;
     const data = await api(url);
@@ -211,12 +212,27 @@
       remove.type = "button";
       remove.addEventListener("click", async () => {
         if (!window.confirm("Apagar esta memória permanentemente?")) return;
-        try { await api(`/api/v1/memories/${encodeURIComponent(item.memory_id)}`, { method: "DELETE" }); await refreshMemories(query); notice("Memória apagada."); }
+        try { await api(`/api/v1/memories/${encodeURIComponent(item.memory_id)}`, { method: "DELETE" }); await refreshMemories(query); await refreshMemoryStats(); notice("Memória apagada."); }
         catch (error) { notice(error.message, true); }
       });
       meta.append(remove);
       card.append(meta);
       target.append(card);
+    }
+  }
+
+  async function refreshMemoryStats() {
+    const data = await api("/api/v1/memories?limit=1&include_stats=true");
+    const stats = data.stats || {};
+    const map = {
+      "mem-short-term": stats.short_term || 0,
+      "mem-long-term": stats.long_term || 0,
+      "mem-episodic": stats.episodic || 0,
+      "mem-semantic": stats.semantic || 0,
+    };
+    for (const [id, value] of Object.entries(map)) {
+      const el = $(id);
+      if (el) el.textContent = String(value);
     }
   }
 
