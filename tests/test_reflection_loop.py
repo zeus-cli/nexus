@@ -9,6 +9,7 @@ from nexus_core.cognitive import CognitiveCore, PlanStep, StepResult, TaskResult
 from nexus_core.reflection import ReflectionEngine, ReflectionDecision, ReflectionResult
 from nexus_core.llm_router.gateway import CompletionResult
 from nexus_core.events import Event
+from nexus_core.automation import ApprovalRequired
 
 # Mocks
 class MockGateway:
@@ -45,10 +46,15 @@ class MockRecorder:
 class MockAutomation:
     def __init__(self):
         self.action_results = {}
+        self.approval_requests = []
     async def run(self, action_id, **kwargs):
         from nexus_core.automation import ActionResult
         res = self.action_results.get(action_id, ActionResult(exit_code=0, stdout="Success", stderr=""))
         return res
+    def create_approval_request(self, req):
+        from nexus_core.approval import ApprovalRequest
+        self.approval_requests.append(req)
+        return "req-" + req.task_id[:8]
 
 @pytest.fixture
 def setup_core():
@@ -170,7 +176,7 @@ async def test_approval_request(setup_core):
     gateway.responses.append(make_completion('{"steps": [{"type": "reason", "description": "Dangerous op", "query": null, "action_id": null}]}', "planning"))
     gateway.responses.append(make_completion('{"decision": "REQUEST_APPROVAL", "justification": "Sensitive", "suggested_action": null}', "critique"))
     
-    with pytest.raises(PermissionError, match="Approval required"):
+    with pytest.raises(ApprovalRequired, match="Reflexão exige aprovação"):
         await core.run("Do dangerous")
 
 @pytest.mark.asyncio

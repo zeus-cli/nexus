@@ -14,7 +14,7 @@ from .events import Event, Severity
 from .llm_router.gateway import CompletionResult, LLMGateway
 from .memory.records import MemoryRecord, MemoryStore
 from .recorder import EventRecorder
-from .automation import AutomationEngine, ActionResult, ApprovalRequired
+from .automation import AutomationEngine, ActionResult, ApprovalRequired, ApprovalRequest
 from .reflection import ReflectionEngine, ReflectionDecision, ReflectionResult
 from .task_store import TaskStore
 from .intent_engine import IntentEngine, Intent, IntentType
@@ -333,9 +333,41 @@ class CognitiveCore:
                     elif critique.decision == ReflectionDecision.ABORT:
                         raise RuntimeError(f"Task aborted by reflection: {critique.justification}")
                     elif critique.decision == ReflectionDecision.REQUEST_APPROVAL:
-                        raise PermissionError(
-                            f"Approval required: {critique.justification}"
+                        # Salva o estado para permitir retomada após aprovação humana.
+                        state = {
+                            "prompt": prompt, "task": task, "system": system, "temperature": temperature,
+                            "max_tokens": max_tokens, "json_mode": json_mode, "correlation_id": correlation,
+                            "provider_name": provider_name, "model_name": model_name,
+                            "plan": [s.to_dict() for s in plan],
+                            "step_results": {str(k): v.to_dict() for k, v in step_results_map.items()},
+                            "attempt": attempt,
+                        }
+                        self._task_store.save_task(task_id, state)
+                        await self._recorder.record(
+                            Event(
+                                kind="agent.task.suspended",
+                                source="cognitive_core",
+                                correlation_id=correlation,
+                                payload={"task_id": task_id, "reason": critique.justification},
+                                severity=Severity.INFO
+                            )
                         )
+                        # Cria uma aprovação HITL para a tarefa inteira.
+                        req = ApprovalRequest(
+                            tool_id="cognitive.reflection",
+                            params={"prompt": prompt, "critique": critique.justification},
+                            task_id=task_id,
+                            plan_id="unknown",
+                            execution_mode="HOST",
+                            access_level="WRITE",
+                            fs_scope="DEFAULT",
+                            net_scope="NONE",
+                            resource_limits="default",
+                            policy_version="1.0",
+                            justification=critique.justification,
+                        )
+                        rid = self._automation.create_approval_request(req)
+                        raise ApprovalRequired(rid, f"Reflexão exige aprovação: {critique.justification}", task_id)
                     else: # PARTIAL_SUCCESS
                         break
 

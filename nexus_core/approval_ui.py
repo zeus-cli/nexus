@@ -19,8 +19,8 @@ NEXUS_THEME = Theme({
     "info": "cyan",
     "warning": "yellow",
     "danger": "bold red",
-    "success": "bold emerald",
-    "accent": "bold teal",
+    "success": "bold green",
+    "accent": "bold cyan",
     "muted": "grey50"
 })
 

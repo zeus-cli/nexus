@@ -238,7 +238,12 @@ class MemoryStore:
         return records
 
     def delete(self, memory_id: str) -> bool:
-        self._vector_store.delete(memory_id)
+        # Vetor é opcional: não deve bloquear a exclusão de memória se o
+        # store vetorial estiver indisponível.
+        try:
+            self._vector_store.delete(memory_id)
+        except Exception:  # noqa: BLE001
+            pass
         return self._db.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,)) > 0
 
     def purge_expired(self, *, now: datetime | None = None) -> int:

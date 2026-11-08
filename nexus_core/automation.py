@@ -113,6 +113,10 @@ class AutomationEngine:
             for tool in self._tools.values()
         ]
 
+    def create_approval_request(self, req: ApprovalRequest) -> str:
+        """Cria uma solicitação de aprovação HITL (interface pública)."""
+        return self._approval_manager.request_approval(req)
+
     async def run(
         self, 
         tool_id: str, 
@@ -181,20 +185,7 @@ class AutomationEngine:
             if not self._approval_manager.verify_action(approval_id, req):
                 raise AutomationDenied("Approval hash mismatch. Action parameters were modified.")
         
-        # 3. Execution Protocol: CLAIMED -> CONSUMED (STARTING)
-        if approval_id:
-            if not self._approval_manager.claim_approval(approval_id):
-                raise AutomationDenied("Approval not available, expired or already consumed.")
-            
-            # Mark as CONSUMED and STARTING before actual subprocess launch
-            self._approval_manager.mark_starting(approval_id)
-            effective_approval_id = approval_id
-        elif decision == PolicyDecision.ALLOW:
-            effective_approval_id = "auto-allowed"
-        else:
-            raise AutomationDenied("Execution attempted without required approval.")
-
-        # 4. Execution Gate: authorize execution via centralized gate.
+        # 3. Execution Gate: authorize execution via centralized gate.
         gate_result = None
         if self._execution_gate is not None:
             gate_result = await self._execution_gate.authorize(
@@ -228,6 +219,22 @@ class AutomationEngine:
                 raise AutomationDenied(
                     f"Execution Gate requires approval: {gate_result.reason}"
                 )
+
+        # 4. Execution Protocol: CLAIMED -> CONSUMED (STARTING)
+        # Só faz claim depois que o Execution Gate autorizou, para não
+        # deixar uma aprovação CONSUMED sem execução se o gate negar.
+        effective_approval_id = approval_id
+        if approval_id:
+            if not self._approval_manager.claim_approval(approval_id):
+                raise AutomationDenied("Approval not available, expired or already consumed.")
+            
+            # Mark as CONSUMED and STARTING before actual subprocess launch
+            self._approval_manager.mark_starting(approval_id)
+            effective_approval_id = approval_id
+        elif decision == PolicyDecision.ALLOW:
+            effective_approval_id = "auto-allowed"
+        else:
+            raise AutomationDenied("Execution attempted without required approval.")
 
         # 5. Actual Execution
         full_argv = tool.argv_template + args
