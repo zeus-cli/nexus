@@ -6,10 +6,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 DEFAULT_TASKS_DIR = Path("data") / "tasks"
 
@@ -23,7 +22,7 @@ class _TaskCrypto:
     para proteger contra leitura casual do disco.
     """
 
-    def __init__(self, key: Optional[str] = None) -> None:
+    def __init__(self, key: str | None = None) -> None:
         self._key = key
         self._fernet = None
         if key is not None:
@@ -74,7 +73,7 @@ class TaskStore:
         self,
         store_dir: str | Path = DEFAULT_TASKS_DIR,
         *,
-        encryption_key: Optional[str] = None,
+        encryption_key: str | None = None,
     ):
         self._store_dir = Path(store_dir)
         self._crypto = _TaskCrypto(encryption_key)

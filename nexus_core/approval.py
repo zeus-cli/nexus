@@ -3,16 +3,17 @@
 
 from __future__ import annotations
 
-import sqlite3
 import hashlib
 import json
+import sqlite3
 import time
 import uuid
-import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Mapping
 from pathlib import Path
+from typing import Any
+
 
 class ApprovalStatus(Enum):
     PENDING = "PENDING"

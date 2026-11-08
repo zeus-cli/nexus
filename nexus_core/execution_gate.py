@@ -35,22 +35,21 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from .approval import (
     ApprovalManager,
     ApprovalRequest,
-    ApprovalDecision,
-    ApprovalStatus,
     ExecutionStatus,
 )
-from .automation_types import RiskLevel, AccessLevel, ExecutionMode
-from .policy import PolicyContext, PolicyDecision, PolicyEngine
-from .sandbox import SandboxExecutor, ResourceLimits as SandboxResourceLimits
-from .recorder import EventRecorder
+from .automation_types import RiskLevel
 from .events import Event, Severity
+from .policy import PolicyContext, PolicyEngine
+from .recorder import EventRecorder
+from .sandbox import SandboxExecutor
 
 
 class ExecutionGateError(Exception):
@@ -380,7 +379,7 @@ class ExecutionGate:
             )
             return {"ok": True, "request_id": request_id, "result": result}
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             execution["status"] = "failed"
             execution["error"] = str(exc)
             execution["completed_at"] = time.monotonic()
@@ -479,12 +478,12 @@ class ExecutionGate:
 
 
 __all__ = [
+    "CapabilityValidationError",
     "ExecutionGate",
+    "ExecutionGateError",
+    "GateDecision",
     "GateRequest",
     "GateResult",
-    "GateDecision",
-    "ExecutionGateError",
     "IdentityVerificationError",
-    "CapabilityValidationError",
     "ResourceReservationError",
 ]

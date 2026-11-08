@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 from ..config import LLM_TASKS, LlmConfig, ProviderConfig
 from .providers import LLMProvider, ProviderError, RawCompletion, build_providers
@@ -14,6 +16,8 @@ from .providers import LLMProvider, ProviderError, RawCompletion, build_provider
 
 class GatewayError(RuntimeError):
     """Nenhum modelo configurado conseguiu concluir a solicitação."""
+
+_logger = logging.getLogger("nexus.llm_router")
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +169,15 @@ class LLMGateway:
                 errors.append(f"{link.provider}/{link.model}: circuito em cooldown")
                 continue
 
+            # Data Egress Policy: provedores remotos exigem authorized=true explícito.
+            if provider_config.kind == "openai_compatible" and not provider_config.authorized:
+                errors.append(
+                    f"{link.provider}/{link.model}: egress de dados bloqueado (provedor remoto "
+                    f"não autorizado — defina authorized=true no config)"
+                )
+                await self._audit_egress_blocked(link.provider)
+                continue
+
             for retry in range(self.config.max_retries + 1):
                 attempts += 1
                 try:
@@ -225,6 +238,13 @@ class LLMGateway:
         self._failures.pop(provider, None)
         self._cooldown_until.pop(provider, None)
         return True
+
+    def _audit_egress_blocked(self, provider: str) -> None:
+        """Registra tentativa de envio de dados para provedor remoto não autorizado."""
+        _logger.warning(
+            "egress de dados bloqueado: provedor remoto '%s' não autorizado (authorized=false)",
+            provider,
+        )
 
     def _record_usage(self, result: RawCompletion, cost: float | None) -> None:
         bucket = self._usage.setdefault(

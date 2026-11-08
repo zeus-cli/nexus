@@ -26,25 +26,34 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from .. import __version__
+from ..app import NexusRuntime, health, serve
 from ..approval_api import APIUser, ApprovalAPI
 from ..automation import ApprovalRequired, AutomationDenied, AutomationError
-from ..app import NexusRuntime, health, serve
 from ..events import Event, Severity, parse_timestamp
 from ..llm_router.gateway import GatewayError
-from ..agent_manifest import AgentManifest, AgentRole
-from ..world_builder import WorldBuilder
 from ..simulation_types import SimulationParadigm, SimulationParameters
+from ..world_builder import WorldBuilder
 from .auth import Authenticator
 from .realtime import HubClient, RealtimeHub
 
@@ -108,7 +117,7 @@ class ApprovalDecisionIn(BaseModel):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _bearer(header: str | None) -> str | None:
@@ -269,7 +278,7 @@ def create_app(
     @app.get("/health")
     async def get_health() -> dict[str, Any]:
         """Sinal de vida barato: não consulta o banco nem exige credencial."""
-        uptime = (datetime.now(timezone.utc) - runtime.started_at).total_seconds()
+        uptime = (datetime.now(UTC) - runtime.started_at).total_seconds()
         return {
             "status": "ok",
             "name": "NEXUS",
@@ -451,7 +460,7 @@ def create_app(
             "bus": runtime.bus.stats.as_dict(),
             "realtime": hub.stats if hub is not None else None,
             "uptime_s": round(
-                (datetime.now(timezone.utc) - runtime.started_at).total_seconds(), 3
+                (datetime.now(UTC) - runtime.started_at).total_seconds(), 3
             ),
             "generated_at": _now(),
         }
@@ -678,7 +687,7 @@ def create_app(
             return definition.as_dict()
         except HTTPException:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{API_PREFIX}/simulations/scenarios", dependencies=[read])
@@ -710,7 +719,7 @@ def create_app(
                 is_baseline=body.get("is_baseline", False),
             )
             return scenario.as_dict()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # -- tempo real ----------------------------------------------------------
@@ -719,7 +728,7 @@ def create_app(
         await websocket.accept()
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=WS_AUTH_TIMEOUT)
-        except (asyncio.TimeoutError, WebSocketDisconnect):
+        except (TimeoutError, WebSocketDisconnect):
             await _reject_socket(websocket, 4401, "autenticação não recebida no prazo")
             return
 
@@ -794,7 +803,7 @@ async def _stream(websocket: WebSocket, client: HubClient) -> None:
     while True:
         try:
             frame = await asyncio.wait_for(client.queue.get(), timeout=WS_PING_INTERVAL)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await websocket.send_json({"type": "ping", "ts": _now()})
             continue
         await websocket.send_json(frame)

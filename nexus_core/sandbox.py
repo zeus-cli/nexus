@@ -4,16 +4,14 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
 from pathlib import Path
 
-from .events import Event, Severity
 from .recorder import EventRecorder
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceLimits:
@@ -130,7 +128,7 @@ class SandboxExecutor:
                 exit_code = process.returncode or 0
                 interrupted = False
                 reason = None
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 stdout_bytes, stderr_bytes = await process.communicate()

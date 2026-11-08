@@ -16,3 +16,4 @@ __pycache__/
 build/
 dist/
 core-rust/target/
+core/nexus-daemon/target/

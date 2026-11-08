@@ -19,15 +19,16 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from . import __version__
 from .app import NexusRuntime, bootstrap, health, serve
 from .approval_api import APIUser, ApprovalAPI
 from .automation import ApprovalRequired
-from .config import AUTONOMY_LEVELS, ConfigError, load_config
+from .config import ConfigError, load_config
 from .events import Event, Severity, parse_timestamp
 from .privatefs import ensure_private_file
 
@@ -844,7 +845,7 @@ def _cmd_events_purge(runtime: NexusRuntime, args: argparse.Namespace) -> int:
     else:
         if args.days < 0:
             raise ValueError("--days não pode ser negativo")
-        cutoff = datetime.now(timezone.utc).replace(microsecond=0)
+        cutoff = datetime.now(UTC).replace(microsecond=0)
         if args.days == 0:
             removed = 0
         else:
@@ -873,7 +874,7 @@ def _cmd_db_backup(runtime: NexusRuntime, args: argparse.Namespace) -> int:
     if args.to:
         destination = Path(args.to).expanduser()
     else:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         destination = runtime.config.paths.data_dir / "backups" / f"nexus_events-{stamp}.db"
     target = runtime.database.backup_to(destination)
     if args.json:

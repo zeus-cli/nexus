@@ -12,10 +12,11 @@ import math
 import os
 import re
 import tomllib
-from urllib.parse import urlsplit
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+from urllib.parse import urlsplit
 
 DEFAULT_CONFIG_NAME = "nexus.toml"
 DEFAULT_CONFIG_RELPATH = Path("config") / DEFAULT_CONFIG_NAME
