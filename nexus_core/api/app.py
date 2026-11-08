@@ -37,10 +37,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
-from ..automation import AutomationDenied, AutomationError
+from ..approval_api import APIUser, ApprovalAPI
+from ..automation import ApprovalRequired, AutomationDenied, AutomationError
 from ..app import NexusRuntime, health, serve
 from ..events import Event, Severity, parse_timestamp
 from ..llm_router.gateway import GatewayError
+from ..agent_manifest import AgentManifest, AgentRole
+from ..world_builder import WorldBuilder
+from ..simulation_types import SimulationParadigm, SimulationParameters
 from .auth import Authenticator
 from .realtime import HubClient, RealtimeHub
 
@@ -93,6 +97,14 @@ class TaskIn(BaseModel):
     correlation_id: str | None = Field(default=None, max_length=64)
     provider: str | None = Field(default=None, min_length=1, max_length=64)
     model: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ActionRunIn(BaseModel):
+    approval_id: str | None = Field(default=None, max_length=64)
+
+
+class ApprovalDecisionIn(BaseModel):
+    decision: Literal["approve", "deny", "revoke"]
 
 
 def _now() -> str:
@@ -507,6 +519,16 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ApprovalRequired as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "approval_required",
+                    "request_id": exc.request_id,
+                    "justification": exc.justification,
+                    "task_id": exc.task_id,
+                },
+            ) from exc
         except GatewayError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except TimeoutError as exc:
@@ -518,16 +540,178 @@ def create_app(
         return {"items": runtime.automation.actions()}
 
     @app.post(f"{API_PREFIX}/automation/actions/{{action_id}}", dependencies=[execute])
-    async def run_action(action_id: str) -> dict[str, Any]:
+    async def run_action(action_id: str, body: ActionRunIn | None = None) -> dict[str, Any]:
+        approval_id = body.approval_id if body else None
         try:
-            result = await runtime.automation.run(action_id)
+            result = await runtime.automation.run(action_id, approval_id=approval_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ApprovalRequired as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "approval_required",
+                    "request_id": exc.request_id,
+                    "justification": exc.justification,
+                    "task_id": exc.task_id,
+                },
+            ) from exc
         except AutomationDenied as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except AutomationError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return result.as_dict()
+
+    # -- aprovações HITL ------------------------------------------------------
+    @app.get(f"{API_PREFIX}/approvals/pending", dependencies=[read])
+    async def list_pending_approvals() -> dict[str, Any]:
+        api = ApprovalAPI(runtime.approvals)
+        pending = api.list_pending()
+        return {"items": pending, "count": len(pending)}
+
+    @app.get(f"{API_PREFIX}/approvals/{{request_id}}", dependencies=[read])
+    async def get_approval(request_id: str) -> dict[str, Any]:
+        api = ApprovalAPI(runtime.approvals)
+        details = api.get_details(request_id)
+        if details is None:
+            raise HTTPException(status_code=404, detail="solicitação de aprovação não encontrada")
+        return details
+
+    @app.post(f"{API_PREFIX}/approvals/{{request_id}}/decide", dependencies=[write])
+    async def decide_approval(request_id: str, body: ApprovalDecisionIn) -> dict[str, Any]:
+        api = ApprovalAPI(runtime.approvals)
+        user = APIUser(user_id="api-client", name="cliente da API", role="OPERATOR")
+
+        if body.decision == "approve":
+            ok = api.approve(request_id, user)
+            action = "aprovada"
+        elif body.decision == "deny":
+            ok = api.deny(request_id, user)
+            action = "negada"
+        else:  # revoke
+            ok = api.revoke(request_id, user)
+            action = "revogada"
+
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=f"solicitação {request_id} não encontrada ou já decidida",
+            )
+        await runtime.recorder.record(
+            Event(
+                kind="approval.decided",
+                source="api",
+                severity=Severity.INFO,
+                payload={"request_id": request_id, "decision": body.decision, "decided_by": user.user_id},
+                dedup=False,
+            )
+        )
+        return {"request_id": request_id, "decision": body.decision, "status": action}
+
+    @app.get(f"{API_PREFIX}/approvals/history", dependencies=[read])
+    async def approval_history(
+        limit: int = Query(default=100, ge=1, le=1000),
+        status: str | None = None,
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        api = ApprovalAPI(runtime.approvals)
+        items = api.get_history(limit=limit, status=status, offset=offset)
+        return {"items": items, "count": len(items), "limit": limit, "offset": offset}
+
+    # -- agentes (Fase 4) ---------------------------------------------------
+    @app.get(f"{API_PREFIX}/agents", dependencies=[read])
+    async def list_agents() -> dict[str, Any]:
+        registry = runtime.agent_registry
+        if registry is None:
+            return {"items": [], "count": 0}
+        return {"items": registry.list_dict(), "count": len(registry.list_dict())}
+
+    @app.get(f"{API_PREFIX}/agents/{{agent_id}}", dependencies=[read])
+    async def get_agent(agent_id: str) -> dict[str, Any]:
+        registry = runtime.agent_registry
+        if registry is None:
+            raise HTTPException(status_code=404, detail="agent registry not available")
+        manifest = registry.get_manifest(agent_id)
+        state = registry.get_state(agent_id)
+        if manifest is None:
+            raise HTTPException(status_code=404, detail="agent not found")
+        return {
+            "manifest": manifest.as_dict(),
+            "state": state.name if state else None,
+        }
+
+    # -- simulações (Fase 5) ------------------------------------------------
+    @app.get(f"{API_PREFIX}/simulations/worlds", dependencies=[read])
+    async def list_worlds() -> dict[str, Any]:
+        registry = runtime.world_registry
+        if registry is None:
+            return {"items": [], "count": 0}
+        return {"items": registry.list_dict(), "count": len(registry.list_dict())}
+
+    @app.post(f"{API_PREFIX}/simulations/worlds", dependencies=[write])
+    async def create_world(body: dict[str, Any]) -> dict[str, Any]:
+        registry = runtime.world_registry
+        if registry is None:
+            raise HTTPException(status_code=404, detail="world registry not available")
+        try:
+            builder = WorldBuilder(
+                world_id=body.get("world_id"),
+                name=body.get("name", "Untitled World"),
+            )
+            paradigm = body.get("paradigm", "agent_based")
+            try:
+                builder.paradigm(SimulationParadigm[paradigm.upper()])
+            except KeyError:
+                raise HTTPException(status_code=422, detail=f"paradigm inválido: {paradigm}")
+            if "initial_state" in body:
+                builder.initial_state(body["initial_state"])
+            for ent in body.get("entities", []):
+                builder.add_entity(
+                    ent["entity_id"],
+                    ent["entity_type"],
+                    ent["name"],
+                    state=ent.get("state", {}),
+                    properties=ent.get("properties", {}),
+                )
+            definition = builder.build()
+            registry.register(definition)
+            return definition.as_dict()
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{API_PREFIX}/simulations/scenarios", dependencies=[read])
+    async def list_scenarios() -> dict[str, Any]:
+        mgr = runtime.scenario_manager
+        if mgr is None:
+            return {"items": [], "count": 0}
+        return {
+            "items": [s.as_dict() for s in mgr.list_scenarios()],
+            "count": len(mgr.list_scenarios()),
+        }
+
+    @app.post(f"{API_PREFIX}/simulations/scenarios", dependencies=[write])
+    async def create_scenario(body: dict[str, Any]) -> dict[str, Any]:
+        mgr = runtime.scenario_manager
+        if mgr is None:
+            raise HTTPException(status_code=404, detail="scenario manager not available")
+        try:
+            params = SimulationParameters(
+                paradigm=SimulationParadigm[body.get("paradigm", "AGENT_BASED")],
+                random_seed=body.get("random_seed"),
+                max_steps=body.get("max_steps"),
+            )
+            scenario = mgr.create_scenario(
+                name=body.get("name", "Untitled Scenario"),
+                world_id=body.get("world_id", "default"),
+                description=body.get("description", ""),
+                parameters=params,
+                is_baseline=body.get("is_baseline", False),
+            )
+            return scenario.as_dict()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # -- tempo real ----------------------------------------------------------
     @app.websocket(f"{API_PREFIX}/ws/events")

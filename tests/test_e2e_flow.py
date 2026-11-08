@@ -11,6 +11,8 @@ from nexus_core.automation import ApprovalRequired
 from nexus_core.approval import ApprovalManager, ApprovalRequest, ApprovalDecision
 from nexus_core.approval_api import ApprovalAPI, APIUser
 from nexus_core.cognitive import PlanStep
+from nexus_core.llm_router.gateway import CompletionResult
+from nexus_core.reflection import ReflectionDecision, ReflectionResult
 
 @pytest.mark.asyncio
 async def test_full_hitl_cognitive_flow():
@@ -56,12 +58,35 @@ async def test_full_hitl_cognitive_flow():
         runtime.cognitive._generate_plan = AsyncMock(return_value=(
             PlanStep(type="automation", description="Run dangerous op", action_id=tool_id),
         ))
+        runtime.cognitive._reflection.critique = AsyncMock(
+            return_value=ReflectionResult(ReflectionDecision.SUCCESS, "ok")
+        )
+
+        async def fake_complete(prompt, *, task="reasoning", **kwargs):
+            return CompletionResult(
+                text="final answer",
+                provider="fake",
+                model="fake",
+                latency_ms=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                estimated_cost_usd=0.0,
+                task=task,
+                attempts=1,
+                context_truncated=False,
+            )
+
+        runtime.cognitive._gateway.complete = fake_complete
 
         try:
             await runtime.cognitive.run("Perform dangerous op")
             pytest.fail("Should have raised ApprovalRequired")
         except ApprovalRequired as ae:
             rid = ae.request_id
+
+        kinds = [event.kind for event in runtime.store.query(limit=200)]
+        assert "agent.task.suspended" in kinds
+        assert "agent.task.failed" not in kinds
             
         api = ApprovalAPI(runtime.automation._approval_manager)
         details = api.get_details(rid)

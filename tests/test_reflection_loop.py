@@ -33,6 +33,9 @@ class MockMemory:
     def search(self, query, limit=4):
         return []
 
+    def list(self, *, limit=4, **kwargs):
+        return []
+
 class MockRecorder:
     def __init__(self):
         self.events = []
@@ -42,7 +45,7 @@ class MockRecorder:
 class MockAutomation:
     def __init__(self):
         self.action_results = {}
-    async def run(self, action_id):
+    async def run(self, action_id, **kwargs):
         from nexus_core.automation import ActionResult
         res = self.action_results.get(action_id, ActionResult(exit_code=0, stdout="Success", stderr=""))
         return res

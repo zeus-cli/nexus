@@ -220,6 +220,88 @@
     }
   }
 
+  async function refreshAgents() {
+    const data = await api("/api/v1/agents");
+    const target = $("agents-list");
+    target.replaceChildren();
+    if (!data.items.length) {
+      target.append(textNode("div", "Nenhum agente registrado.", "empty"));
+      return;
+    }
+    for (const item of data.items) {
+      const card = document.createElement("article");
+      card.className = "surface memory-card";
+      card.append(textNode("h3", item.name || item.agent_id));
+      card.append(textNode("p", `${item.role} · ${item.model_profile}`));
+      const meta = document.createElement("div");
+      meta.className = "memory-meta";
+      meta.append(textNode("span", `estado: ${item.state || '—'}`));
+      meta.append(textNode("span", `ID: ${item.agent_id.slice(0,8)}…`));
+      card.append(meta);
+      target.append(card);
+    }
+    const summary = $("agents-summary");
+    summary.replaceChildren();
+    const roles = {};
+    for (const item of data.items) {
+      roles[item.role] = (roles[item.role] || 0) + 1;
+    }
+    summary.append(textNode("p", Object.entries(roles).map(([r, c]) => `${c} ${r}`).join(" · ") || "nenhum agente"));
+  }
+
+  async function refreshSimulations() {
+    const [worldsData, scenariosData] = await Promise.all([
+      api("/api/v1/simulations/worlds"),
+      api("/api/v1/simulations/scenarios"),
+    ]);
+    const worldsTarget = $("worlds-list");
+    worldsTarget.replaceChildren();
+    if (!worldsData.items.length) {
+      worldsTarget.append(textNode("div", "Nenhum mundo registrado.", "empty"));
+    }
+    for (const w of worldsData.items) {
+      const card = document.createElement("article");
+      card.className = "surface memory-card";
+      card.append(textNode("h3", w.name || w.world_id));
+      card.append(textNode("p", `${w.paradigm} · ${w.status}`));
+      worldsTarget.append(card);
+    }
+    const scenariosTarget = $("scenarios-list");
+    scenariosTarget.replaceChildren();
+    if (!scenariosData.items.length) {
+      scenariosTarget.append(textNode("div", "Nenhum cenário registrado.", "empty"));
+    }
+    for (const s of scenariosData.items) {
+      const card = document.createElement("article");
+      card.className = "surface memory-card";
+      card.append(textNode("h3", s.name || s.scenario_id));
+      card.append(textNode("p", `${s.world_id} · ${s.is_baseline ? "baseline" : "alternativa"}`));
+      scenariosTarget.append(card);
+    }
+  }
+
+  async function refreshSecurity() {
+    const [eventsData] = await Promise.all([
+      api("/api/v1/events?limit=10"),
+    ]);
+    const target = $("security-events");
+    target.replaceChildren();
+    const securityEvents = eventsData.items.filter(e => e.kind.startsWith("security."));
+    if (!securityEvents.length) {
+      target.append(textNode("div", "Nenhum evento de segurança recente.", "empty"));
+    }
+    for (const ev of securityEvents) {
+      const row = document.createElement("div");
+      row.className = "event-row";
+      row.append(
+        textNode("time", new Date(ev.created_at).toLocaleTimeString()),
+        textNode("span", ev.kind, "event-kind"),
+        textNode("code", ev.severity),
+      );
+      target.append(row);
+    }
+  }
+
   $("save-token").addEventListener("click", async () => {
     state.token = tokenInput.value.trim();
     if (!state.token) { sessionStorage.removeItem("nexus-token"); setConnection(false, "token necessário"); return; }
@@ -234,6 +316,9 @@
   $("memory-refresh").addEventListener("click", () => refreshMemories().catch((error) => notice(error.message, true)));
   $("tasks-refresh").addEventListener("click", () => refreshTaskHistory().catch((error) => notice(error.message, true)));
   $("automation-refresh").addEventListener("click", () => refreshAutomation().catch((error) => notice(error.message, true)));
+  $("agents-refresh").addEventListener("click", () => refreshAgents().catch((error) => notice(error.message, true)));
+  $("simulations-refresh").addEventListener("click", () => refreshSimulations().catch((error) => notice(error.message, true)));
+  $("security-refresh").addEventListener("click", () => refreshSecurity().catch((error) => notice(error.message, true)));
   $("logs-refresh").addEventListener("click", () => refreshLogs().catch((error) => notice(error.message, true)));
   $("config-refresh").addEventListener("click", () => refreshConfig().catch((error) => notice(error.message, true)));
   $("task-kind").addEventListener("change", () => refreshModels().catch((error) => notice(error.message, true)));
@@ -251,6 +336,9 @@
     if (button.dataset.panel === "memory") refreshMemories().catch((error) => notice(error.message, true));
     if (button.dataset.panel === "tasks") refreshTaskHistory().catch((error) => notice(error.message, true));
     if (button.dataset.panel === "automation") refreshAutomation().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "agents") refreshAgents().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "simulations") refreshSimulations().catch((error) => notice(error.message, true));
+    if (button.dataset.panel === "security") refreshSecurity().catch((error) => notice(error.message, true));
     if (button.dataset.panel === "logs") refreshLogs().catch((error) => notice(error.message, true));
     if (button.dataset.panel === "config") refreshConfig().catch((error) => notice(error.message, true));
   }));

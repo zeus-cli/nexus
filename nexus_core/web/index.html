@@ -28,6 +28,9 @@
       <button class="nav-item" data-panel="events"><span>⌁</span> Eventos</button>
       <button class="nav-item" data-panel="models"><span>◉</span> Modelos</button>
       <button class="nav-item" data-panel="automation"><span>⌘</span> Diagnósticos</button>
+      <button class="nav-item" data-panel="agents"><span>⬡</span> Agentes</button>
+      <button class="nav-item" data-panel="simulations"><span>⌾</span> Simulações</button>
+      <button class="nav-item" data-panel="security"><span>🛡</span> Segurança</button>
       <button class="nav-item" data-panel="logs"><span>≋</span> Logs</button>
       <button class="nav-item" data-panel="config"><span>⚙</span> Configuração</button>
       <div class="sidebar-bottom"><span class="pulse"></span><span>Processamento local</span></div>
@@ -94,6 +97,27 @@
         <div id="automation-notice" class="notice" role="status"></div>
         <div id="automation-list" class="model-list"><div class="empty">Conecte para carregar.</div></div>
         <article class="surface result-card"><div class="surface-heading"><h2>Saída do diagnóstico</h2><span id="automation-state" class="badge">aguardando</span></div><pre id="automation-result" class="result-content">Somente diagnósticos fixos de leitura são disponibilizados.</pre></article>
+      </section>
+
+      <section class="panel" id="panel-agents">
+        <div class="page-heading"><div><p class="eyebrow">INTELIGÊNCIA</p><h1>Agentes</h1></div><button id="agents-refresh" class="button quiet">Atualizar</button></div>
+        <div id="agents-list" class="model-list"><div class="empty">Conecte para carregar.</div></div>
+        <article class="surface"><div class="surface-heading"><h2>Capacidades por papel</h2></div><div id="agents-summary" class="empty">Carregando…</div></article>
+      </section>
+
+      <section class="panel" id="panel-simulations">
+        <div class="page-heading"><div><p class="eyebrow">SIMULAÇÃO</p><h1>Simulações</h1></div><button id="simulations-refresh" class="button quiet">Atualizar</button></div>
+        <div class="columns">
+          <article class="surface"><div class="surface-heading"><h2>Mundos</h2></div><div id="worlds-list" class="model-list"><div class="empty">Conecte para carregar.</div></div></article>
+          <article class="surface"><div class="surface-heading"><h2>Cenários</h2></div><div id="scenarios-list" class="model-list"><div class="empty">Conecte para carregar.</div></div></article>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-security">
+        <div class="page-heading"><div><p class="eyebrow">GOVERNANÇA</p><h1>Segurança</h1></div><button id="security-refresh" class="button quiet">Atualizar</button></div>
+        <div id="security-notice" class="notice" role="status"></div>
+        <div id="pending-approvals" class="model-list"><div class="empty">Conecte para carregar.</div></div>
+        <article class="surface result-card"><div class="surface-heading"><h2>Eventos de segurança recentes</h2><div id="security-events" class="event-list empty">Conecte para carregar.</div></div></article>
       </section>
 
       <section class="panel" id="panel-logs">

@@ -113,8 +113,12 @@ class MemoryStore:
                 ),
             )
         
-        self._vector_store.upsert(memory_id, content)
-        
+        # Vetor é atualizado sob demanda: não deve bloquear a criação de memória
+        # se o modelo de embeddings ou o LanceDB não estiverem disponíveis.
+        try:
+            self._vector_store.upsert(memory_id, content)
+        except Exception:  # noqa: BLE001 - vetor é opcional, memória é a prioridade
+            pass
         record = self.get(memory_id)
         if record is None:
             raise MemoryStoreError("memória não pôde ser lida após criação")

@@ -13,11 +13,11 @@ def mock_recorder():
     return MagicMock(spec=EventRecorder)
 
 @pytest.fixture
-def engine(mock_recorder):
+def engine(mock_recorder, tmp_path):
     return AutomationEngine(
         autonomy_level=1,
         recorder=mock_recorder,
-        approval_manager=ApprovalManager(),
+        approval_manager=ApprovalManager(db_path=str(tmp_path / "approvals.db")),
         policy_engine=PolicyEngine()
     )
 

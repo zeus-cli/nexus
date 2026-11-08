@@ -34,8 +34,9 @@ async def test_basic_lifecycle(manager):
     req = create_req()
     rid = manager.request_approval(req)
     manager.decide(rid, ApprovalDecision("APPROVED", "human-1"))
-    assert manager.claim_approval(rid) is True
-    manager.consume_approval(rid, "Success")
+    assert    manager.claim_approval(rid) is True
+    manager.mark_starting(rid)
+    manager.update_execution_status(rid, ExecutionStatus.COMPLETED, "Success")
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute("SELECT status FROM approvals WHERE id = ?", (rid,)).fetchone()
         assert row[0] == ApprovalStatus.CONSUMED.value
@@ -104,7 +105,8 @@ async def test_reuse_rejection(manager):
     rid = manager.request_approval(req)
     manager.decide(rid, ApprovalDecision("APPROVED", "human-1"))
     manager.claim_approval(rid)
-    manager.consume_approval(rid)
+    manager.mark_starting(rid)
+    manager.update_execution_status(rid, ExecutionStatus.COMPLETED)
     assert manager.claim_approval(rid) is False
 
 @pytest.mark.asyncio

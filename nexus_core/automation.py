@@ -17,6 +17,7 @@ from .sandbox import SandboxExecutor, SandboxResult
 from .approval import ApprovalManager, ApprovalRequest, ApprovalStatus, ExecutionStatus
 from .policy import PolicyEngine, PolicyContext, PolicyDecision
 from .automation_types import Tool, RiskLevel, AccessLevel, ExecutionMode
+from .execution_gate import ExecutionGate, GateDecision
 
 # Security Constants
 MAX_OUTPUT_BYTES = 16384
@@ -48,9 +49,10 @@ class AutomationDenied(AutomationError):
 
 class ApprovalRequired(AutomationError):
     """Execution requires human approval."""
-    def __init__(self, request_id: str, justification: str):
+    def __init__(self, request_id: str, justification: str, task_id: str = "unknown"):
         self.request_id = request_id
         self.justification = justification
+        self.task_id = task_id
         super().__init__(f"Approval required: {justification}")
 
 # Tool definitions
@@ -79,6 +81,7 @@ class AutomationEngine:
         runner: Runner | None = None,
         approval_manager: ApprovalManager | None = None,
         policy_engine: PolicyEngine | None = None,
+        execution_gate: ExecutionGate | None = None,
     ) -> None:
         self._autonomy_level = autonomy_level
         self._recorder = recorder
@@ -88,6 +91,7 @@ class AutomationEngine:
         self._sandbox = SandboxExecutor(recorder)
         self._approval_manager = approval_manager or ApprovalManager()
         self._policy_engine = policy_engine or PolicyEngine()
+        self._execution_gate = execution_gate
 
     def actions(self) -> list[dict[str, Any]]:
         """Public catalogue consumed by the CLI, TUI and HTTP API."""
@@ -159,7 +163,7 @@ class AutomationEngine:
                 )
                 rid = self._approval_manager.request_approval(req)
                 await self._recorder.record(Event(kind="automation.approval.requested", source="automation", payload={"request_id": rid, "tool_id": tool.id}))
-                raise ApprovalRequired(rid, reason)
+                raise ApprovalRequired(rid, reason, task_id)
             
             req = ApprovalRequest(
                 tool_id=tool.id,
@@ -190,7 +194,42 @@ class AutomationEngine:
         else:
             raise AutomationDenied("Execution attempted without required approval.")
 
-        # 4. Actual Execution
+        # 4. Execution Gate: authorize execution via centralized gate.
+        gate_result = None
+        if self._execution_gate is not None:
+            gate_result = await self._execution_gate.authorize(
+                component_id="automation_engine",
+                tool_id=tool.id,
+                params={"args": args},
+                task_id=task_id,
+                plan_id=plan_id,
+                risk_level=tool.risk,
+                autonomy_level=self._autonomy_level,
+                fs_scope=fs_scope,
+                net_scope=net_scope,
+                resource_limits=resource_limits,
+                justification=reason,
+            )
+            if gate_result.decision == GateDecision.DENIED:
+                await self._recorder.record(
+                    Event(
+                        kind="automation.gate.denied",
+                        source="automation",
+                        payload={
+                            "tool_id": tool.id,
+                            "reason": gate_result.reason,
+                            "gate_request_id": gate_result.request_id,
+                        },
+                        severity=Severity.WARNING,
+                    )
+                )
+                raise AutomationDenied(f"Execution Gate DENY: {gate_result.reason}")
+            if gate_result.decision == GateDecision.REQUIRES_APPROVAL and not approval_id:
+                raise AutomationDenied(
+                    f"Execution Gate requires approval: {gate_result.reason}"
+                )
+
+        # 5. Actual Execution
         full_argv = tool.argv_template + args
         started = time.monotonic()
         
@@ -198,13 +237,21 @@ class AutomationEngine:
             Event(
                 kind="automation.action.started",
                 source="automation",
-                payload={"tool_id": tool.id, "args": args, "mode": tool.execution_mode.name, "approval_id": effective_approval_id},
+                payload={
+                    "tool_id": tool.id,
+                    "args": args,
+                    "mode": tool.execution_mode.name,
+                    "approval_id": effective_approval_id,
+                    "gate_execution_id": gate_result.execution_id if gate_result else None,
+                },
                 dedup=False,
             )
         )
 
         try:
-            timeout = tool.timeout_s if hasattr(tool, "timeout_s") else self._default_timeout
+            timeout = (
+                tool.timeout_s if tool.timeout_s is not None else self._default_timeout
+            )
             
             if tool.execution_mode == ExecutionMode.SANDBOX:
                 res = await self._sandbox.execute(full_argv, timeout_s=timeout)
@@ -229,7 +276,9 @@ class AutomationEngine:
             if effective_approval_id != "auto-allowed":
                 self._approval_manager.update_execution_status(effective_approval_id, ExecutionStatus.FAILED)
             if isinstance(exc, asyncio.TimeoutError):
-                raise AutomationError(f"Tool {tool.id} timed out after {timeout}s") from exc
+                raise AutomationError(
+                    f"Tool {tool.id} excedeu o tempo limite de {timeout}s"
+                ) from exc
             raise AutomationError(f"Execution failed: {type(exc).__name__}") from exc
 
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -266,6 +315,27 @@ class AutomationEngine:
                 dedup=False,
             )
         )
+
+        # 6. Execution Gate: mark execution as committed/consumed.
+        if self._execution_gate is not None and gate_result.execution_id is not None:
+            try:
+                await self._execution_gate.execute(
+                    gate_result.execution_id,
+                    runner=None,  # execution already performed above
+                )
+            except Exception:  # gate execution failure should not undo action
+                await self._recorder.record(
+                    Event(
+                        kind="automation.gate.commit_failed",
+                        source="automation",
+                        payload={
+                            "tool_id": tool.id,
+                            "gate_execution_id": gate_result.execution_id,
+                        },
+                        severity=Severity.WARNING,
+                    )
+                )
+
         return result
 
     async def _record_terminal(

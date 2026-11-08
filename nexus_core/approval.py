@@ -52,12 +52,13 @@ class ApprovalDecision:
     approver: str
     timestamp: float = field(default_factory=time.time)
 
+DEFAULT_APPROVALS_DB = Path("data") / "databases" / "nexus_approvals.db"
+
+
 class ApprovalManager:
-    def __init__(
-        self,
-        db_path: str = "/home/nexus/Documentos/nexus/data/databases/nexus_approvals.db"
-    ) -> None:
-        self._db_path = db_path
+    def __init__(self, db_path: str | Path = DEFAULT_APPROVALS_DB) -> None:
+        self._db_path = Path(db_path)
+        self._db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._init_db()
 
     def _init_db(self) -> None:
@@ -239,8 +240,8 @@ class ApprovalManager:
         now = time.time()
         with sqlite3.connect(self._db_path) as conn:
             orphans = conn.execute(
-                "SELECT approval_id FROM executions WHERE status IN (?, ?) AND started_at < ?",
-                (ExecutionStatus.STARTING.value, ExecutionStatus.RUNNING.value, now - timeout_s)
+                "SELECT approval_id FROM executions WHERE status IN (?, ?, ?) AND started_at < ?",
+                (ExecutionStatus.STARTING.value, ExecutionStatus.RUNNING.value, ExecutionStatus.PREPARED.value, now - timeout_s)
             ).fetchall()
             
             count = 0

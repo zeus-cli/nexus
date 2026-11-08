@@ -30,6 +30,6 @@ class Tool:
     access: AccessLevel
     execution_mode: ExecutionMode = ExecutionMode.HOST
     idempotent: bool = True
-    timeout_s: float = 10.0
+    timeout_s: float | None = None
     argv_template: tuple[str, ...] = field(default_factory=tuple)
     required_autonomy: int = 1

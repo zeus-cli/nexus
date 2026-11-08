@@ -5,11 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from nexus_core.approval import ApprovalManager
 from nexus_core.automation import (
-    AutomationDenied,
-    ActionResult,
+    MAX_OUTPUT_BYTES,
+    ApprovalRequired,
     AutomationEngine,
 )
+from nexus_core.automation_types import AccessLevel, RiskLevel, Tool
 from nexus_core.eventbus import EventBus
 from nexus_core.memory.eventstore import EventStore
 from nexus_core.memory.store import Database
@@ -27,6 +29,9 @@ class AutomationEngineTest(unittest.IsolatedAsyncioTestCase):
         self.events = EventStore(self.database)
         self.recorder = EventRecorder(self.events, EventBus())
 
+    def approval_manager(self) -> ApprovalManager:
+        return ApprovalManager(db_path=str(Path(self.temporary.name) / "approvals.db"))
+
     async def test_requires_controlled_execution_autonomy(self) -> None:
         called = False
 
@@ -35,9 +40,14 @@ class AutomationEngineTest(unittest.IsolatedAsyncioTestCase):
             called = True
             return 0, b"", b""
 
-        engine = AutomationEngine(1, self.recorder, runner=runner)
-        with self.assertRaises(AutomationDenied):
-            await engine.run("system.uptime")
+        engine = AutomationEngine(
+            0,
+            self.recorder,
+            runner=runner,
+            approval_manager=self.approval_manager(),
+        )
+        with self.assertRaises(ApprovalRequired):
+            await engine.run("sys.uptime")
         self.assertFalse(called)
 
     async def test_runs_only_registered_argv_and_audits_metadata(self) -> None:
@@ -48,7 +58,7 @@ class AutomationEngineTest(unittest.IsolatedAsyncioTestCase):
             return 0, b"up 4 hours\n", b""
 
         engine = AutomationEngine(2, self.recorder, runner=runner)
-        result = await engine.run("system.uptime")
+        result = await engine.run("sys.uptime")
         self.assertEqual(result.stdout, "up 4 hours\n")
         self.assertEqual(calls[0][0], ("/usr/bin/uptime",))
         self.assertEqual(
@@ -69,23 +79,33 @@ class AutomationEngineTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(timeout + 0.6)
             return 0, b"", b""
 
-        engine = AutomationEngine(2, self.recorder, timeout_s=0.01, runner=runner)
+        engine = AutomationEngine(
+            2, self.recorder, default_timeout=0.01, runner=runner
+        )
         with self.assertRaisesRegex(Exception, "excedeu"):
-            await engine.run("system.uptime")
+            await engine.run("sys.uptime")
         self.assertEqual(self.events.count(kind="automation.action.failed"), 1)
 
     async def test_output_is_capped(self) -> None:
         async def runner(argv, timeout):
-            return 0, b"x" * 9000, b""
+            return 0, b"x" * (MAX_OUTPUT_BYTES + 1000), b""
 
+        tool = Tool(
+            id="test.output",
+            version="1.0",
+            description="bounded output",
+            risk=RiskLevel.LOW,
+            access=AccessLevel.READ,
+            argv_template=("/bin/echo",),
+        )
         engine = AutomationEngine(
             2,
             self.recorder,
-            actions=(ActionResult("test.output", "bounded output", ("/bin/echo",)),),
+            tools={"test.output": tool},
             runner=runner,
         )
         result = await engine.run("test.output")
-        self.assertEqual(len(result.stdout.encode("utf-8")), 8192)
+        self.assertEqual(len(result.stdout.encode("utf-8")), MAX_OUTPUT_BYTES)
         self.assertTrue(result.truncated)
 
 

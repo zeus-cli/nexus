@@ -234,10 +234,16 @@ class EventsApiTest(ApiTestCase):
     def test_automation_requires_execute_scope(self) -> None:
         actions = self.client.get("/api/v1/automation/actions", headers=self.headers)
         self.assertEqual(actions.status_code, 200)
-        self.assertTrue(all(not item["allowed"] for item in actions.json()["items"]))
+        # Autonomia 1 (assistência) permite leitura, mas não o escopo 'execute'.
+        self.assertTrue(
+            all(
+                item["allowed"] == (self.autonomy_level >= item["required_autonomy"])
+                for item in actions.json()["items"]
+            )
+        )
 
         response = self.client.post(
-            "/api/v1/automation/actions/system.uptime", headers=self.headers
+            "/api/v1/automation/actions/sys.uptime", headers=self.headers
         )
         self.assertEqual(response.status_code, 403)
 

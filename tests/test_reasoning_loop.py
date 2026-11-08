@@ -10,6 +10,7 @@ from nexus_core.llm_router.gateway import CompletionResult, LLMGateway
 from nexus_core.memory.records import MemoryStore
 from nexus_core.recorder import EventRecorder
 from nexus_core.automation import AutomationEngine
+from nexus_core.reflection import ReflectionDecision, ReflectionResult
 
 @dataclass
 class MockCompletion:
@@ -33,7 +34,7 @@ class MockGateway(LLMGateway):
         self.call_count += 1
         task_name = kwargs.get("task", "reasoning")
         if "planning" in task_name:
-            res = MockCompletion(text='{"steps": [{"type": "diagnostic", "description": "Check uptime", "action_id": "system.uptime"}, {"type": "reason", "description": "Analyze uptime"}]}')
+            res = MockCompletion(text='{"steps": [{"type": "automation", "description": "Check uptime", "action_id": "sys.uptime"}, {"type": "reason", "description": "Analyze uptime"}]}')
         elif "synthesis" in task_name:
             res = MockCompletion(text="The system is healthy and has been up for 10 minutes.")
         else:
@@ -55,6 +56,7 @@ async def test_reasoning_loop():
     mock_gateway = MockGateway()
     mock_memory = MagicMock(spec=MemoryStore)
     mock_memory.search.return_value = []
+    mock_memory.list.return_value = []
     mock_recorder = AsyncMock(spec=EventRecorder)
     mock_automation = AsyncMock(spec=AutomationEngine)
     # Mock ActionResult to have required fields
@@ -66,7 +68,19 @@ async def test_reasoning_loop():
     mock_action_res.truncated = False
     mock_automation.run.return_value = mock_action_res
 
-    core = CognitiveCore(mock_gateway, mock_memory, mock_recorder, mock_automation)
+    mock_reflection = AsyncMock()
+    mock_reflection.critique.return_value = ReflectionResult(
+        ReflectionDecision.SUCCESS, "ok"
+    )
+    mock_task_store = MagicMock()
+    core = CognitiveCore(
+        mock_gateway,
+        mock_memory,
+        mock_recorder,
+        mock_automation,
+        mock_reflection,
+        mock_task_store,
+    )
     
     print("Running reasoning loop test...")
     result = await core.run("Check system status")
@@ -76,7 +90,7 @@ async def test_reasoning_loop():
     print(f"Final answer: {result.final_completion.text}")
     
     assert len(result.plan) == 2
-    assert result.step_results[0].step.type == "diagnostic"
+    assert result.step_results[0].step.type == "automation"
     assert "up 10 mins" in result.step_results[0].output
     assert "healthy" in result.final_completion.text
     print("Test PASSED")

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
 import tempfile
@@ -15,6 +15,7 @@ from nexus_core.memory.eventstore import EventStore
 from nexus_core.memory.records import MemoryStore
 from nexus_core.memory.store import Database
 from nexus_core.recorder import EventRecorder
+from nexus_core.reflection import ReflectionDecision, ReflectionResult
 
 
 class FakeProvider:
@@ -72,7 +73,19 @@ class CognitiveCoreTest(unittest.IsolatedAsyncioTestCase):
         )
         gateway = LLMGateway(config, providers={"local": provider} if provider else {})
         self.addAsyncCleanup(gateway.aclose)
-        return CognitiveCore(gateway, self.memory, self.recorder, MagicMock(), MagicMock(), MagicMock(), timeout_s=0.01)
+        reflection = AsyncMock()
+        reflection.critique.return_value = ReflectionResult(
+            ReflectionDecision.SUCCESS, "ok"
+        )
+        return CognitiveCore(
+            gateway,
+            self.memory,
+            self.recorder,
+            MagicMock(),
+            reflection,
+            MagicMock(),
+            timeout_s=0.01,
+        )
 
     async def test_task_uses_memory_and_records_lifecycle_without_content(self) -> None:
         self.memory.create(
@@ -85,14 +98,19 @@ class CognitiveCoreTest(unittest.IsolatedAsyncioTestCase):
             "Prepare a Python project update.", task="summary", correlation_id="run-7"
         )
 
-        self.assertEqual(result.completion.text, "draft output")
+        self.assertEqual(result.final_completion.text, "draft output")
         self.assertEqual(result.correlation_id, "run-7")
         self.assertEqual(result.memory_ids, (self.memory.search("Python")[0].memory_id,))
         self.assertIn("untrusted data", fake.system or "")
         self.assertIn("Portuguese", fake.system or "")
         self.assertEqual(
             [event.kind for event in self.events.query(correlation_id="run-7")],
-            ["agent.task.completed", "agent.task.started"],
+            [
+                "agent.task.completed",
+                "agent.reflection.decision",
+                "agent.reflection.triggered",
+                "agent.task.started",
+            ],
         )
         for event in self.events.query(correlation_id="run-7"):
             self.assertNotIn("Prepare a Python", str(dict(event.payload)))

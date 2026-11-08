@@ -31,9 +31,9 @@ class DefaultConfigTest(unittest.TestCase):
     def test_repository_config_is_valid(self) -> None:
         config = load_config(PROJECT_ROOT / "config" / "nexus.toml")
         self.assertEqual(config.environment, "production")
-        self.assertEqual(config.safety.autonomy_level, 0)
-        self.assertEqual(config.autonomy_name, "observation")
-        self.assertEqual(config.paths.database, PROJECT_ROOT / "data" / "databases" / "zeus_events.db")
+        self.assertEqual(config.safety.autonomy_level, 1)
+        self.assertEqual(config.autonomy_name, "assistance")
+        self.assertEqual(config.paths.database, PROJECT_ROOT / "data" / "databases" / "nexus_events.db")
         self.assertEqual(config.paths.log_file, PROJECT_ROOT / "data" / "logs" / "nexus.log")
         self.assertEqual(config.api.host, "127.0.0.1")
         self.assertEqual(config.events.retention_days, 0)
@@ -51,7 +51,7 @@ class OverrideTest(unittest.TestCase):
                 config = load_config(path)
             self.assertEqual(config.paths.data_dir, root / "override")
             self.assertEqual(
-                config.paths.database, root / "override" / "databases" / "zeus_events.db"
+                config.paths.database, root / "override" / "databases" / "nexus_events.db"
             )
             self.assertEqual(config.paths.log_file, root / "override" / "logs" / "nexus.log")
 

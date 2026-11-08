@@ -23,9 +23,15 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .approval import ApprovalManager
 from .automation import AutomationEngine
 from .reflection import ReflectionEngine
 from .task_store import TaskStore
+from .agent_registry import AgentRegistry
+from .agent_runtime import AgentRuntime
+from .agent_manifest import AgentManifest, AgentRole
+from .world_builder import WorldRegistry
+from .scenario_manager import ScenarioManager, ExperimentRunner
 from .config import AUTONOMY_LEVELS, Config, load_config
 from .cognitive import CognitiveCore
 from .eventbus import EventBus
@@ -35,7 +41,11 @@ from .llm_router.gateway import LLMGateway
 from .memory.eventstore import EventStore
 from .memory.records import MemoryStore
 from .memory.store import Database
-from .privatefs import secure_runtime_data_directory
+from .privatefs import (
+    ensure_private_directory,
+    ensure_private_file,
+    secure_runtime_data_directory,
+)
 from .recorder import EventRecorder
 from .sentinel import SentinelReceiver
 from .resources import ResourceManager
@@ -54,10 +64,18 @@ class NexusRuntime:
     llm_gateway: LLMGateway
     cognitive: CognitiveCore
     automation: AutomationEngine
+    approvals: ApprovalManager
     logger: Any
     started_at: datetime
     resources: ResourceManager
     sentinel: SentinelReceiver | None = None
+    # Fase 4 — Multi-Agent Intelligence (opcionais)
+    agent_registry: Any = None
+    agent_runtime: Any = None
+    # Fase 5 — Universal Simulation (opcionais)
+    world_registry: Any = None
+    scenario_manager: Any = None
+    experiment_runner: Any = None
 
     async def aclose(self) -> None:
         """Close asynchronous provider clients and the SQLite connection."""
@@ -94,10 +112,36 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
     bus = EventBus(logger=get_logger("eventbus"))
     recorder = EventRecorder(store, bus, logger=get_logger("recorder"))
     llm_gateway = LLMGateway(config.llm)
-    automation = AutomationEngine(config.safety.autonomy_level, recorder)
+    ensure_private_directory(config.paths.approvals_db.parent)
+    ensure_private_file(config.paths.approvals_db)
+    approvals = ApprovalManager(db_path=str(config.paths.approvals_db))
+    automation = AutomationEngine(
+        config.safety.autonomy_level, recorder, approval_manager=approvals
+    )
     reflection = ReflectionEngine(llm_gateway)
-    task_store = TaskStore()
+    task_store = TaskStore(str(config.paths.tasks_dir))
     cognitive = CognitiveCore(llm_gateway, memory, recorder, automation, reflection, task_store)
+
+    # Fase 4 — Multi-Agent Intelligence
+    agent_registry = AgentRegistry()
+    agent_registry.register(AgentManifest(
+        agent_id="orchestrator-1", name="Orchestrator", role=AgentRole.ORCHESTRATOR,
+        capabilities=("coordinate", "plan"), model_profile="reasoning",
+    ))
+    agent_registry.register(AgentManifest(
+        agent_id="researcher-1", name="Researcher", role=AgentRole.RESEARCHER,
+        capabilities=("web.search", "document.read"), model_profile="research",
+    ))
+    agent_registry.register(AgentManifest(
+        agent_id="analyst-1", name="Analyst", role=AgentRole.ANALYST,
+        capabilities=("analysis", "statistics"), model_profile="general",
+    ))
+    agent_runtime = AgentRuntime(agent_registry)
+
+    # Fase 5 — Universal Simulation
+    world_registry = WorldRegistry()
+    scenario_manager = ScenarioManager()
+    experiment_runner = ExperimentRunner()
 
     resources = ResourceManager()
     runtime = NexusRuntime(
@@ -110,9 +154,15 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         llm_gateway=llm_gateway,
         cognitive=cognitive,
         automation=automation,
+        approvals=approvals,
         logger=logger,
         started_at=datetime.now(timezone.utc),
         resources=resources,
+        agent_registry=agent_registry,
+        agent_runtime=agent_runtime,
+        world_registry=world_registry,
+        scenario_manager=scenario_manager,
+        experiment_runner=experiment_runner,
     )
     logger.info(
         "runtime inicializado",

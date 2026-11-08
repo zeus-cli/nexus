@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import lancedb
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from typing import Any, Sequence, Optional
 from dataclasses import dataclass
 
@@ -23,34 +21,54 @@ class VectorStore:
         model_name: str = "all-MiniLM-L6-v2",
         index_name: str = "nexus_memories"
     ) -> None:
-        self._db = lancedb.connect(data_dir)
-        self._model = SentenceTransformer(model_name)
+        # LanceDB e Sentence-Transformers são carregados sob demanda: o
+        # bootstrap não deve pagar (nem exigir) o modelo de embeddings.
+        self._data_dir = data_dir
+        self._model_name = model_name
         self._table_name = index_name
+        self._db: Any | None = None
+        self._model: Any | None = None
+
+    def _connect(self):
+        if self._db is None:
+            import lancedb
+
+            self._db = lancedb.connect(self._data_dir)
+        return self._db
+
+    def _embedder(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            self._model = SentenceTransformer(self._model_name)
+        return self._model
         
     def embed(self, text: str) -> np.ndarray:
         """Generate a vector embedding for the given text."""
-        return self._model.encode(text)
+        return self._embedder().encode(text)
 
     def upsert(self, memory_id: str, text: str) -> None:
         """Add or update a vector for a specific memory ID."""
         vector = self.embed(text)
         
-        if self._table_name not in self._db.table_names():
+        database = self._connect()
+        if self._table_name not in database.table_names():
             # Create table with the first record
-            table = self._db.create_table(self._table_name, [{"memory_id": memory_id, "vector": vector}])
+            table = database.create_table(self._table_name, [{"memory_id": memory_id, "vector": vector}])
         else:
-            table = self._db.open_table(self._table_name)
+            table = database.open_table(self._table_name)
             # For a simple implementation, we append. 
             # LanceDB search will return the most recent/closest.
             table.add([{"memory_id": memory_id, "vector": vector}])
 
     def search(self, query_text: str, limit: int = 10) -> list[VectorResult]:
         """Semantic search returning the most relevant memory IDs."""
-        if self._table_name not in self._db.table_names():
+        database = self._connect()
+        if self._table_name not in database.table_names():
             return []
             
         query_vec = self.embed(query_text)
-        table = self._db.open_table(self._table_name)
+        table = database.open_table(self._table_name)
         
         results = table.search(query_vec).limit(limit).to_pandas()
         
@@ -64,8 +82,9 @@ class VectorStore:
 
     def delete(self, memory_id: str) -> None:
         """Remove a vector from the store."""
-        if self._table_name in self._db.table_names():
-            table = self._db.open_table(self._table_name)
+        database = self._connect()
+        if self._table_name in database.table_names():
+            table = database.open_table(self._table_name)
             table.delete("memory_id = '" + memory_id + "'")
 
     def aclose(self) -> None:

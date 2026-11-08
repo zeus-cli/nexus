@@ -43,7 +43,7 @@ class ServiceTest(unittest.TestCase):
     def test_bootstrap_creates_database_and_log(self) -> None:
         self.assertTrue(self.runtime.config.paths.database.is_file())
         self.assertTrue(self.runtime.config.paths.log_file.is_file())
-        self.assertEqual(self.runtime.database.schema_version(), 2)
+        self.assertEqual(self.runtime.database.schema_version(), 3)
 
     def test_health_reports_operational_state(self) -> None:
         report = health(self.runtime)

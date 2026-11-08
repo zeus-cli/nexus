@@ -214,6 +214,18 @@ class LLMGateway:
         if count >= self.config.failure_threshold:
             self._cooldown_until[provider] = self._clock() + self.config.cooldown_s
 
+    def reset_circuit(self, provider: str) -> bool:
+        """Força o reset do circuit breaker de um provedor.
+
+        Útil para recuperação operacional quando o provedor está de volta
+        antes do cooldown expirar. Retorna True se o provedor existia.
+        """
+        if provider not in self._failures and provider not in self._cooldown_until:
+            return False
+        self._failures.pop(provider, None)
+        self._cooldown_until.pop(provider, None)
+        return True
+
     def _record_usage(self, result: RawCompletion, cost: float | None) -> None:
         bucket = self._usage.setdefault(
             f"{result.provider}/{result.model}",

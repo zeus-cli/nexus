@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -114,7 +115,7 @@ class SandboxExecutor:
                 final_argv = systemd_args + bwrap_args
 
             # 3. Execution
-            started = asyncio.get_event_loop().time()
+            started = time.monotonic()
             process = await asyncio.create_subprocess_exec(
                 *final_argv,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -145,11 +146,12 @@ class SandboxExecutor:
                 reason = "cancelled"
                 raise
             
-            duration_ms = int((asyncio.get_event_loop().time() - started) * 1000)
+            duration_ms = int((time.monotonic() - started) * 1000)
             
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-            truncated = len(stdout_bytes) > 16384 or len(stderr_bytes) > 16384
+            MAX_OUTPUT_BYTES = 16384
+            stdout = stdout_bytes[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+            stderr = stderr_bytes[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+            truncated = len(stdout_bytes) > MAX_OUTPUT_BYTES or len(stderr_bytes) > MAX_OUTPUT_BYTES
             
             return SandboxResult(
                 exit_code=exit_code,

@@ -53,6 +53,14 @@ class PathsConfig:
     database: Path
     log_file: Path
 
+    @property
+    def approvals_db(self) -> Path:
+        return self.data_dir / "databases" / "nexus_approvals.db"
+
+    @property
+    def tasks_dir(self) -> Path:
+        return self.data_dir / "tasks"
+
 
 @dataclass(frozen=True, slots=True)
 class LoggingConfig:
@@ -249,7 +257,7 @@ def config_from_mapping(raw: Mapping[str, Any], *, source: Path | None = None,
     data_dir = _resolve(project_root, raw_data_dir)
     database = (_resolve(project_root, paths_section["database"])
                 if "database" in paths_section
-                else data_dir / "databases" / "zeus_events.db")
+                else data_dir / "databases" / "nexus_events.db")
     log_file = (_resolve(project_root, paths_section["log_file"])
                 if "log_file" in paths_section
                 else data_dir / "logs" / "nexus.log")

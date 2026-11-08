@@ -25,9 +25,14 @@ from typing import Any, Sequence
 
 from . import __version__
 from .app import NexusRuntime, bootstrap, health, serve
+from .approval_api import APIUser, ApprovalAPI
+from .automation import ApprovalRequired
 from .config import AUTONOMY_LEVELS, ConfigError, load_config
 from .events import Event, Severity, parse_timestamp
 from .privatefs import ensure_private_file
+
+#: código de saída quando a operação depende de uma aprovação humana pendente
+PENDING_APPROVAL_EXIT = 3
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
     task_run.add_argument("--json-mode", action="store_true")
     task_run.add_argument("--provider")
     task_run.add_argument("--model")
+    task_run.add_argument("--approval-id", help="aproveita uma solicitação HITL já aprovada")
+    task_resume = task_sub.add_parser("resume", help="retoma uma tarefa suspensa aguardando aprovação")
+    task_resume.add_argument("task_id")
+    task_resume.add_argument("--approval-id", required=True, help="solicitação HITL aprovada")
 
     memory = subparsers.add_parser("memory", help="gerencia registros de memória locais")
     memory_sub = memory.add_subparsers(dest="memory_command", required=True)
@@ -115,6 +124,15 @@ def build_parser() -> argparse.ArgumentParser:
     diagnostics_sub.add_parser("list", help="lista operações registradas e seus requisitos")
     diagnostic_run = diagnostics_sub.add_parser("run", help="executa um diagnóstico registrado")
     diagnostic_run.add_argument("action_id")
+    diagnostic_run.add_argument("--approval-id", help="aproveita uma solicitação HITL já aprovada")
+
+    approvals = subparsers.add_parser("approvals", help="lista e decide solicitações HITL")
+    approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
+    approvals_sub.add_parser("list", help="lista solicitações pendentes")
+    approval_approve = approvals_sub.add_parser("approve", help="aprova uma solicitação")
+    approval_approve.add_argument("request_id")
+    approval_deny = approvals_sub.add_parser("deny", help="nega uma solicitação")
+    approval_deny.add_argument("request_id")
 
     token = subparsers.add_parser("token", help="gerencia o token local da API")
     token_sub = token.add_subparsers(dest="token_command", required=True)
@@ -151,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_sub = database.add_subparsers(dest="db_command", required=True)
     db_sub.add_parser("migrate", help="aplica migrações pendentes")
     backup = db_sub.add_parser("backup", help="copia consistente do banco")
-    backup.add_argument("--to", help="destino (padrão: data/backups/zeus_events-<ts>.db)")
+    backup.add_argument("--to", help="destino (padrão: data/backups/nexus_events-<ts>.db)")
     return parser
 
 
@@ -405,6 +423,35 @@ def _cmd_llm_complete(runtime: NexusRuntime, args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_pending_approval(exc: ApprovalRequired, *, action_id: str | None = None) -> None:
+    """Explains how to unblock a HITL suspension without a traceback."""
+    task_id = exc.task_id if exc.task_id != "unknown" else None
+    print(f"aprovação necessária: {exc.justification}", file=sys.stderr)
+    print(f"  solicitação: {exc.request_id}", file=sys.stderr)
+    if task_id:
+        print(f"  tarefa: {task_id}", file=sys.stderr)
+    print(f"  aprove com: nexus approvals approve {exc.request_id}", file=sys.stderr)
+    if action_id:
+        print(
+            f"  repita com: nexus diagnostics run {action_id} --approval-id {exc.request_id}",
+            file=sys.stderr,
+        )
+    elif task_id:
+        print(
+            f"  retome com: nexus task resume {task_id} --approval-id {exc.request_id}",
+            file=sys.stderr,
+        )
+
+
+def _print_task_result(result: dict[str, Any], json_output: bool) -> int:
+    if json_output:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(result["final_completion"]["text"])
+        print(f"\ntask_id: {result['task_id']}", file=sys.stderr)
+    return 0
+
+
 def _cmd_task_run(runtime: NexusRuntime, args: argparse.Namespace) -> int:
     if args.prompt is None and sys.stdin.isatty():
         raise ValueError("forneça --prompt ou envie o texto pela entrada padrão")
@@ -423,18 +470,34 @@ def _cmd_task_run(runtime: NexusRuntime, args: argparse.Namespace) -> int:
                 json_mode=args.json_mode,
                 provider_name=args.provider,
                 model_name=args.model,
+                approval_id=args.approval_id,
             )
             return result.as_dict()
         finally:
             await runtime.llm_gateway.aclose()
 
-    result = asyncio.run(run())
-    if args.json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-    else:
-        print(result["completion"]["text"])
-        print(f"\ntask_id: {result['task_id']}", file=sys.stderr)
-    return 0
+    try:
+        result = asyncio.run(run())
+    except ApprovalRequired as exc:
+        _report_pending_approval(exc)
+        return PENDING_APPROVAL_EXIT
+    return _print_task_result(result, args.json)
+
+
+def _cmd_task_resume(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    async def resume() -> dict[str, Any]:
+        try:
+            result = await runtime.cognitive.resume(args.task_id, args.approval_id)
+            return result.as_dict()
+        finally:
+            await runtime.llm_gateway.aclose()
+
+    try:
+        result = asyncio.run(resume())
+    except ApprovalRequired as exc:
+        _report_pending_approval(exc)
+        return PENDING_APPROVAL_EXIT
+    return _print_task_result(result, args.json)
 
 
 def _cmd_memory_list(runtime: NexusRuntime, args: argparse.Namespace) -> int:
@@ -583,13 +646,23 @@ def _cmd_diagnostics_list(runtime: NexusRuntime, args: argparse.Namespace) -> in
         print(json.dumps(items, ensure_ascii=False, indent=2))
     else:
         for item in items:
-            state = "disponível" if item["allowed"] else "exige autonomia nível 2"
-            _row(item["action_id"], f"{item['description']} ({state})")
+            state = (
+                "disponível"
+                if item["allowed"]
+                else f"exige autonomia nível {item['required_autonomy']}"
+            )
+            _row(item["id"], f"{item['description']} ({state})")
     return 0
 
 
 def _cmd_diagnostics_run(runtime: NexusRuntime, args: argparse.Namespace) -> int:
-    result = asyncio.run(runtime.automation.run(args.action_id))
+    try:
+        result = asyncio.run(
+            runtime.automation.run(args.action_id, approval_id=args.approval_id)
+        )
+    except ApprovalRequired as exc:
+        _report_pending_approval(exc, action_id=args.action_id)
+        return PENDING_APPROVAL_EXIT
     if args.json:
         print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
     else:
@@ -599,6 +672,50 @@ def _cmd_diagnostics_run(runtime: NexusRuntime, args: argparse.Namespace) -> int
         _row("código de saída", str(result.exit_code))
         _row("duração", f"{result.duration_ms} ms")
     return 0 if result.exit_code == 0 else 1
+
+
+def _approval_api(runtime: NexusRuntime) -> ApprovalAPI:
+    return ApprovalAPI(runtime.approvals)
+
+
+def _cmd_approvals_list(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    pending = _approval_api(runtime).list_pending()
+    if args.json:
+        print(json.dumps(pending, ensure_ascii=False, indent=2))
+        return 0
+    if not pending:
+        print("nenhuma aprovação pendente")
+        return 0
+    for item in pending:
+        _row(item["id"], f"{item['tool_id']} · tarefa {item['task_id']} · {item['justification']}")
+    print(f"{len(pending)} solicitação(ões) pendente(s)")
+    return 0
+
+
+def _decide_approval(runtime: NexusRuntime, args: argparse.Namespace, *, approve: bool) -> int:
+    api = _approval_api(runtime)
+    user = APIUser("cli", "operador local", "OPERATOR")
+    ok = (
+        api.approve(args.request_id, user)
+        if approve
+        else api.deny(args.request_id, user)
+    )
+    if not ok:
+        print(
+            f"erro: solicitação {args.request_id} não encontrada ou já decidida",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"{'aprovada' if approve else 'negada'}: {args.request_id}")
+    return 0
+
+
+def _cmd_approvals_approve(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    return _decide_approval(runtime, args, approve=True)
+
+
+def _cmd_approvals_deny(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    return _decide_approval(runtime, args, approve=False)
 
 
 def _cmd_token(runtime: NexusRuntime, args: argparse.Namespace) -> int:
@@ -757,7 +874,7 @@ def _cmd_db_backup(runtime: NexusRuntime, args: argparse.Namespace) -> int:
         destination = Path(args.to).expanduser()
     else:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        destination = runtime.config.paths.data_dir / "backups" / f"zeus_events-{stamp}.db"
+        destination = runtime.config.paths.data_dir / "backups" / f"nexus_events-{stamp}.db"
     target = runtime.database.backup_to(destination)
     if args.json:
         print(json.dumps({"backup": str(target), "size_bytes": target.stat().st_size}, indent=2))
@@ -813,8 +930,11 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
                 return _cmd_llm_models(runtime, args)
             if args.llm_command == "complete":
                 return _cmd_llm_complete(runtime, args)
-        if command == "task" and args.task_command == "run":
-            return _cmd_task_run(runtime, args)
+        if command == "task":
+            if args.task_command == "run":
+                return _cmd_task_run(runtime, args)
+            if args.task_command == "resume":
+                return _cmd_task_resume(runtime, args)
         if command == "memory":
             handlers = {
                 "list": _cmd_memory_list,
@@ -830,6 +950,13 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
                 return _cmd_diagnostics_list(runtime, args)
             if args.diagnostics_command == "run":
                 return _cmd_diagnostics_run(runtime, args)
+        if command == "approvals":
+            handlers = {
+                "list": _cmd_approvals_list,
+                "approve": _cmd_approvals_approve,
+                "deny": _cmd_approvals_deny,
+            }
+            return handlers[args.approvals_command](runtime, args)
         if command == "token":
             return _cmd_token(runtime, args)
         if command == "events":
