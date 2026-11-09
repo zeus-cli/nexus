@@ -1,3 +1,40 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+.env
+.venv.pth
+
+# --- Instalação/empacotamento ---
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*,cover
+.hypothesis/
+.pytest_cache/
+
+# --- Rust ---
+target/
+**/target/
+CACHEDIR.TAG
+
+# --- Dados/runtime do NEXUS (não versionar banco, logs, segredos) ---
 data/databases/
 data/logs/
 data/backups/
@@ -5,15 +42,27 @@ data/vectors/
 data/secrets/
 data/tasks/
 data/run/
-.pytest_cache/
 *.db
 *.db-wal
 *.db-shm
-__pycache__/
-*.py[cod]
-.venv/
-*.egg-info/
-build/
-dist/
-core-rust/target/
-core/nexus-daemon/target/
+*.sqlite
+*.sqlite3
+
+# --- IDE / Editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Sistemas ---
+*.log
+*.tmp
+*.temp
+__debug_bin__
+
+# --- Documentação gerada ---
+site/
+docs/_build/
