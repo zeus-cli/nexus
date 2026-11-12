@@ -39,7 +39,7 @@ max_retries = 1
 name = "ollama-local"
 kind = "ollama"
 base_url = "http://127.0.0.1:11434"
-models = ["qwen2.5:7b", "llama3.1:8b"]
+models = ["nexusorbe-llama3.1:latest", "nexusorbe-llama3.2:latest"]
 enabled = true
 authorized = true
 timeout_s = 120
@@ -57,11 +57,11 @@ api_key_env = "NEXUS_LLM_API_KEY"
 
 [[llm.chain]]
 provider = "ollama-local"
-model = "qwen2.5:7b"
+model = "nexusorbe-llama3.1:latest"
 
 [[llm.chain]]
 provider = "ollama-local"
-model = "llama3.1:8b"
+model = "nexusorbe-llama3.2:latest"
 
 [[llm.chain]]
 provider = "compatible-remote"

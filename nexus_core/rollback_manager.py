@@ -10,7 +10,6 @@ irreversíveis; tais ações exigem validação pré-execução mais forte.
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -209,14 +208,16 @@ def asyncio_run_coroutine_or_call(handler: Callable[..., Any], params: Mapping[s
     import asyncio
     import inspect
 
-    if inspect.iscoroutinefunction(handler):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return bool(loop.run_until_complete(handler(params)))
-    return bool(handler(params))
+    if not inspect.iscoroutinefunction(handler):
+        return bool(handler(params))
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return bool(asyncio.run(handler(params)))
+    raise RuntimeError(
+        "rollback assíncrono não pode ser executado de dentro de um event loop ativo"
+    )
 
 
 __all__ = [

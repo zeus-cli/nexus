@@ -275,7 +275,10 @@ def config_from_mapping(raw: Mapping[str, Any], *, source: Path | None = None,
     api_section = _section(raw, "api", ("host", "port", "token_file"))
     api_host = _as_str(api_section.get("host", "127.0.0.1"), "api.host")
     if not is_loopback_host(api_host):
-        raise ConfigError("api.host deve ser um endereço IP de loopback; a API não oferece TLS")
+        raise ConfigError(
+            "api.host deve ser um endereço de loopback (127.0.0.1, ::1 ou localhost); "
+            "a API não oferece TLS"
+        )
     safety_section = _section(raw, "safety", ("autonomy_level",))
 
     raw_level = env.get(ENV_AUTONOMY_LEVEL, safety_section.get("autonomy_level", 0))
@@ -328,9 +331,21 @@ def config_from_mapping(raw: Mapping[str, Any], *, source: Path | None = None,
 
 
 def is_loopback_host(host: str) -> bool:
-    """Return true only for a literal loopback IP address."""
+    """Retorna verdadeiro para IP de loopback ou nomes ``localhost``.
+
+    O host pode vir de ``api.host`` ou do hostname de uma URL. Aceitar
+    ``localhost`` evita que a configuração padrão de ferramentas locais seja
+    tratada como acesso remoto (o que exigiria HTTPS e autorização explícita).
+    """
+    if not isinstance(host, str):
+        return False
+    normalized = host.strip().lower().rstrip(".")
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        return ipaddress.ip_address(normalized).is_loopback
     except ValueError:
         return False
 

@@ -23,9 +23,12 @@ class _TaskCrypto:
     """
 
     def __init__(self, key: str | None = None) -> None:
-        self._key = key
+        # Uma chave vazia não pode operar o XOR (divisão por zero); trate-a
+        # como ausência de criptografia.
+        self._key = key or None
         self._fernet = None
-        if key is not None:
+        if self._key is not None:
+            key = self._key
             try:
                 from cryptography.fernet import Fernet
 
@@ -109,10 +112,23 @@ class TaskStore:
         if self._crypto._key is not None:
             payload = self._crypto.encrypt(payload)
 
-        with open(temp_path, "w") as f:
-            f.write(payload)
-
-        os.chmod(temp_path, 0o600)
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_TRUNC
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        fd = os.open(temp_path, flags, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            # ``os.fdopen`` fecha o descritor; este chmod cobre um eventual
+            # arquivo temporário pré-existente com permissões mais amplas.
+            os.chmod(temp_path, 0o600)
         temp_path.replace(path)
 
     def load_task(self, task_id: str) -> dict[str, Any] | None:
@@ -125,7 +141,7 @@ class TaskStore:
             return None
 
         try:
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 raw = f.read()
 
             if self._crypto._key is not None:

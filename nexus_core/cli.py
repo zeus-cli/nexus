@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,15 @@ from .privatefs import ensure_private_file
 
 #: código de saída quando a operação depende de uma aprovação humana pendente
 PENDING_APPROVAL_EXIT = 3
+
+
+def _iter_subparsers(parser: argparse.ArgumentParser) -> Iterator[argparse.ArgumentParser]:
+    """Itera recursivamente pelos subparsers, inclusive os aninhados."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for subparser in action.choices.values():
+                yield subparser
+                yield from _iter_subparsers(subparser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,7 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     memory_add.add_argument("--expires-at", help="timestamp ISO-8601 opcional")
     memory_delete = memory_sub.add_parser("delete", help="apaga explicitamente uma memória")
     memory_delete.add_argument("memory_id")
-    memory_purge = memory_sub.add_parser("purge-expired", help="remove memórias com expiração vencida")
+    memory_sub.add_parser("purge-expired", help="remove memórias com expiração vencida")
     memory_export = memory_sub.add_parser("export", help="exporta registros para JSON privado")
     memory_export.add_argument("--to", required=True, help="arquivo de destino (modo 0600; diretório já deve existir)")
     memory_export.add_argument("--include-expired", action="store_true")
@@ -171,6 +180,22 @@ def build_parser() -> argparse.ArgumentParser:
     db_sub.add_parser("migrate", help="aplica migrações pendentes")
     backup = db_sub.add_parser("backup", help="copia consistente do banco")
     backup.add_argument("--to", help="destino (padrão: data/backups/nexus_events-<ts>.db)")
+
+    # Aceita --config/--json antes ou depois do comando, inclusive em
+    # subcomandos aninhados. ``SUPPRESS`` evita que o default do subparser
+    # sobrescreva o valor já lido no nível superior.
+    for command_parser in _iter_subparsers(parser):
+        command_parser.add_argument(
+            "--config",
+            default=argparse.SUPPRESS,
+            help="caminho do nexus.toml (aceito antes ou depois do comando)",
+        )
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="saída em JSON (aceito antes ou depois do comando)",
+        )
     return parser
 
 

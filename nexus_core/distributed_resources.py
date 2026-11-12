@@ -22,7 +22,7 @@ from typing import Any
 
 import psutil
 
-from .distributed_node import NodeResources
+from .distributed_node import DistributedNode, NodeResources
 from .distributed_node_manager import NodeManager
 
 
@@ -71,7 +71,6 @@ class ResourceMonitor:
     def get_local_resources(self) -> NodeResources:
         """Coleta recursos locais do nó atual."""
         mem = psutil.virtual_memory()
-        swap = psutil.swap_memory()
         disk = psutil.disk_usage("/")
 
         # GPU: detecção simples (nvidia-smi não é dependência; usa flag de env).

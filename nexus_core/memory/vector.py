@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -118,6 +118,25 @@ class VectorStore:
     # Operações CRUD
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _table_names(database: Any) -> set[str]:
+        """Lista tabelas de forma compatível com versões antigas do LanceDB.
+
+        ``LanceDBConnection.list_tables`` retorna um ``TableListing`` (com a
+        lista em ``.tables``) nas versões recentes; ``table_names()`` está
+        depreciado. Versões antigas só oferecem o segundo método.
+        """
+        lister = getattr(database, "list_tables", None)
+        if lister is not None:
+            listing = lister()
+            return set(getattr(listing, "tables", listing))
+        return set(database.table_names())
+
+    @staticmethod
+    def _literal(value: str) -> str:
+        """Escapa um valor para uso seguro em filtro SQL do LanceDB."""
+        return "'" + str(value).replace("'", "''") + "'"
+
     def upsert(self, memory_id: str, text: str) -> None:
         """Add or update a vector for a specific memory ID.
 
@@ -134,12 +153,16 @@ class VectorStore:
         if database is None:
             return
         try:
-            if self._table_name not in database.table_names():
-                table = database.create_table(
+            names = self._table_names(database)
+            if self._table_name not in names:
+                database.create_table(
                     self._table_name, [{"memory_id": memory_id, "vector": vector}]
                 )
             else:
                 table = database.open_table(self._table_name)
+                # ``upsert`` precisa substituir o vetor anterior; ``add`` puro
+                # acumularia duplicatas para a mesma memória.
+                table.delete(f"memory_id = {self._literal(memory_id)}")
                 table.add([{"memory_id": memory_id, "vector": vector}])
         except Exception:  # noqa: BLE001 - vetor é opcional
             self._available = False
@@ -155,7 +178,7 @@ class VectorStore:
         if database is None:
             return []
         try:
-            if self._table_name not in database.table_names():
+            if self._table_name not in self._table_names(database):
                 return []
             query_vec = self.embed(query_text)
         except Exception:  # noqa: BLE001 - vetor é opcional
@@ -183,9 +206,9 @@ class VectorStore:
         if database is None:
             return
         try:
-            if self._table_name in database.table_names():
+            if self._table_name in self._table_names(database):
                 table = database.open_table(self._table_name)
-                table.delete(f"memory_id = '{memory_id}'")
+                table.delete(f"memory_id = {self._literal(memory_id)}")
         except Exception:  # noqa: BLE001 - vetor é opcional
             self._available = False
 

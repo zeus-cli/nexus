@@ -12,6 +12,14 @@
     notice.timer = window.setTimeout(() => { node.className = "notice"; }, 5500);
   }
 
+  function securityNotice(message, isError = false) {
+    const node = $("security-notice");
+    node.textContent = message;
+    node.className = `notice visible${isError ? " error" : ""}`;
+    window.clearTimeout(securityNotice.timer);
+    securityNotice.timer = window.setTimeout(() => { node.className = "notice"; }, 5500);
+  }
+
   async function api(path, options = {}) {
     if (!state.token) throw new Error("Informe o token local para continuar.");
     const response = await fetch(path, {
@@ -297,9 +305,61 @@
   }
 
   async function refreshSecurity() {
-    const [eventsData] = await Promise.all([
-      api("/api/v1/events?limit=10"),
+    const [eventsData, approvalsData] = await Promise.all([
+      api("/api/v1/events?limit=50"),
+      api("/api/v1/approvals/pending"),
     ]);
+
+    const approvalsTarget = $("pending-approvals");
+    approvalsTarget.replaceChildren();
+    if (!approvalsData.items.length) {
+      approvalsTarget.append(textNode("div", "Nenhuma aprovação pendente.", "empty"));
+    }
+    for (const item of approvalsData.items) {
+      const card = document.createElement("article");
+      card.className = "model-card";
+      const heading = document.createElement("header");
+      heading.append(
+        textNode("strong", item.tool_id || "solicitação"),
+        textNode("span", item.risk_level || "risco não classificado", "badge"),
+      );
+      card.append(heading);
+      card.append(textNode("p", item.justification || "Sem justificativa registrada."));
+      const meta = document.createElement("div");
+      meta.className = "approval-meta";
+      meta.append(
+        textNode("span", `tarefa ${item.task_id || "—"} · ${item.access_level || "—"} · ${item.execution_mode || "—"}`),
+        textNode("span", `expira ${new Date(item.expires_at * 1000).toLocaleString()}`),
+      );
+      card.append(meta);
+
+      const actions = document.createElement("div");
+      actions.className = "form-footer";
+      const decide = async (decision, label) => {
+        try {
+          await api(`/api/v1/approvals/${encodeURIComponent(item.id)}/decide`, {
+            method: "POST",
+            body: JSON.stringify({ decision }),
+          });
+          securityNotice(label);
+          await refreshSecurity();
+        } catch (error) {
+          securityNotice(error.message, true);
+        }
+      };
+      const approve = textNode("button", "Aprovar");
+      approve.className = "button primary";
+      approve.type = "button";
+      approve.addEventListener("click", () => decide("approve", "Solicitação aprovada."));
+      const deny = textNode("button", "Negar");
+      deny.className = "button quiet";
+      deny.type = "button";
+      deny.addEventListener("click", () => decide("deny", "Solicitação negada."));
+      actions.append(deny, approve);
+      card.append(actions);
+      approvalsTarget.append(card);
+    }
+
     const target = $("security-events");
     target.replaceChildren();
     const securityEvents = eventsData.items.filter(e => e.kind.startsWith("security."));

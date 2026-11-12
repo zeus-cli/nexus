@@ -20,11 +20,39 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
-from .events import Event
+from .events import Event, Severity, parse_timestamp
+from .sqlite_utils import connect_db
+
+_ENVELOPE_KEYS = {
+    "event_id",
+    "kind",
+    "source",
+    "severity",
+    "payload",
+    "correlation_id",
+    "created_at",
+    "dedup_key",
+}
+
+
+def _decode_payload(raw: str) -> dict[str, Any]:
+    """Retorna somente o payload do evento.
+
+    Versões antigas gravavam ``Event.to_dict()`` inteiro na coluna ``payload``.
+    Para esses registros, extrai o campo interno ``payload`` sem perder os
+    dados; para os novos, o conteúdo já é o payload canônico.
+    """
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("payload persistido não é um objeto JSON")
+    if set(data) == _ENVELOPE_KEYS and isinstance(data.get("payload"), dict):
+        return dict(data["payload"])
+    return dict(data)
 
 
 class OutboxStatus(Enum):
@@ -105,7 +133,7 @@ class TransactionalOutbox:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
@@ -146,10 +174,14 @@ class TransactionalOutbox:
                     event_id TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     source TEXT NOT NULL,
+                    severity TEXT NOT NULL DEFAULT 'info',
                     payload TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     failed_attempts INTEGER NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    dedup_key TEXT,
+                    correlation_id TEXT,
+                    event_created_at TEXT
                 )
                 """
             )
@@ -157,7 +189,22 @@ class TransactionalOutbox:
                 "CREATE INDEX IF NOT EXISTS ix_dead_letter_created "
                 "ON dead_letter(created_at)"
             )
+            self._migrate_dead_letter(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_dead_letter(conn: sqlite3.Connection) -> None:
+        """Adiciona metadados preservados a bancos criados por versões antigas."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(dead_letter)")}
+        columns = {
+            "severity": "TEXT NOT NULL DEFAULT 'info'",
+            "dedup_key": "TEXT",
+            "correlation_id": "TEXT",
+            "event_created_at": "TEXT",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE dead_letter ADD COLUMN {name} {definition}")
 
     def enqueue(
         self,
@@ -168,10 +215,10 @@ class TransactionalOutbox:
     ) -> str:
         """Enfileira um evento para entrega (atomicamente com transação do caller)."""
         entry_id = uuid.uuid4().hex
-        now = time.monotonic()
-        payload_json = json.dumps(event.to_dict(), sort_keys=True, separators=(",", ":"))
+        now = time.time()
+        payload_json = event.canonical_payload()
 
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO outbox
@@ -204,8 +251,8 @@ class TransactionalOutbox:
 
     def get_pending(self, limit: int = 100) -> list[OutboxEntry]:
         """Retorna entradas pendentes ou para retry (next_retry_at <= agora)."""
-        now = time.monotonic()
-        with sqlite3.connect(self._db_path) as conn:
+        now = time.time()
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -220,8 +267,8 @@ class TransactionalOutbox:
 
     def mark_delivered(self, entry_id: str) -> bool:
         """Marca uma entrega como bem-sucedida."""
-        now = time.monotonic()
-        with sqlite3.connect(self._db_path) as conn:
+        now = time.time()
+        with connect_db(self._db_path) as conn:
             cur = conn.execute(
                 """
                 UPDATE outbox
@@ -246,8 +293,8 @@ class TransactionalOutbox:
         retry_delay_s: float | None = None,
     ) -> bool:
         """Marca uma entrega como falhada, agendando retry ou dead-letter."""
-        now = time.monotonic()
-        with sqlite3.connect(self._db_path) as conn:
+        now = time.time()
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT attempts, max_attempts FROM outbox WHERE entry_id = ?",
@@ -284,9 +331,10 @@ class TransactionalOutbox:
                     conn.execute(
                         """
                         INSERT INTO dead_letter
-                        (entry_id, original_entry_id, event_id, kind, source, payload,
-                         reason, failed_attempts, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (entry_id, original_entry_id, event_id, kind, source, severity,
+                         payload, reason, failed_attempts, created_at, dedup_key,
+                         correlation_id, event_created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             dead_id,
@@ -294,10 +342,14 @@ class TransactionalOutbox:
                             event_row["event_id"],
                             event_row["kind"],
                             event_row["source"],
+                            event_row["severity"],
                             event_row["payload"],
                             error,
                             attempts,
                             now,
+                            event_row["dedup_key"],
+                            event_row["correlation_id"],
+                            event_row["created_at"],
                         ),
                     )
             else:
@@ -323,8 +375,8 @@ class TransactionalOutbox:
 
     def move_to_dead_letter(self, entry_id: str, reason: str) -> bool:
         """Move uma entrada manualmente para dead-letter."""
-        now = time.monotonic()
-        with sqlite3.connect(self._db_path) as conn:
+        now = time.time()
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM outbox WHERE entry_id = ?", (entry_id,)
@@ -335,9 +387,10 @@ class TransactionalOutbox:
             conn.execute(
                 """
                 INSERT INTO dead_letter
-                (entry_id, original_entry_id, event_id, kind, source, payload,
-                 reason, failed_attempts, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (entry_id, original_entry_id, event_id, kind, source, severity,
+                 payload, reason, failed_attempts, created_at, dedup_key,
+                 correlation_id, event_created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dead_id,
@@ -345,10 +398,14 @@ class TransactionalOutbox:
                     row["event_id"],
                     row["kind"],
                     row["source"],
+                    row["severity"],
                     row["payload"],
                     reason,
                     row["attempts"],
                     now,
+                    row["dedup_key"],
+                    row["correlation_id"],
+                    row["created_at"],
                 ),
             )
             conn.execute(
@@ -360,7 +417,7 @@ class TransactionalOutbox:
 
     def list_dead_letter(self, limit: int = 100) -> list[DeadLetterEntry]:
         """Lista eventos na fila de mortos."""
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM dead_letter ORDER BY created_at DESC LIMIT ?",
@@ -370,8 +427,8 @@ class TransactionalOutbox:
 
     def requeue_from_dead_letter(self, entry_id: str) -> bool:
         """Reenfileira um evento da fila de mortos de volta ao outbox."""
-        now = time.monotonic()
-        with sqlite3.connect(self._db_path) as conn:
+        now = time.time()
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM dead_letter WHERE entry_id = ?", (entry_id,)
@@ -381,6 +438,15 @@ class TransactionalOutbox:
             # Reinsere no outbox como PENDING com novo event_id (evita UNIQUE constraint).
             new_entry_id = uuid.uuid4().hex
             new_event_id = uuid.uuid4().hex
+            event_created_at = row["event_created_at"]
+            if not event_created_at:
+                # Bancos antigos não guardavam o created_at original do evento.
+                event_created_at = datetime.fromtimestamp(
+                    row["created_at"], tz=timezone.utc
+                ).isoformat()
+            payload_json = json.dumps(
+                _decode_payload(row["payload"]), sort_keys=True, separators=(",", ":")
+            )
             conn.execute(
                 """
                 INSERT INTO outbox
@@ -394,11 +460,11 @@ class TransactionalOutbox:
                     new_event_id,
                     row["kind"],
                     row["source"],
-                    "info",  # severity desconhecido, usa info
-                    row["payload"],
-                    None,
-                    None,
-                    row["created_at"],
+                    row["severity"] or Severity.INFO.value,
+                    payload_json,
+                    row["dedup_key"],
+                    row["correlation_id"],
+                    event_created_at,
                     OutboxStatus.PENDING.name,
                     0,
                     5,
@@ -415,7 +481,7 @@ class TransactionalOutbox:
             return True
 
     def stats(self) -> dict[str, Any]:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             total = conn.execute(
                 "SELECT COUNT(*) FROM outbox"
@@ -435,17 +501,15 @@ class TransactionalOutbox:
             }
 
     def _row_to_entry(self, row: sqlite3.Row) -> OutboxEntry:
-        import json as _json
-
         event = Event(
             kind=row["kind"],
             source=row["source"],
-            payload=_json.loads(row["payload"]),
-            severity=__import__("nexus_core.events", fromlist=["Severity"]).Severity(
-                row["severity"]
-            ),
+            payload=_decode_payload(row["payload"]),
+            severity=Severity(row["severity"]),
             event_id=row["event_id"],
             correlation_id=row["correlation_id"],
+            created_at=parse_timestamp(row["created_at"], "outbox.created_at"),
+            dedup=row["dedup_key"] is not None,
         )
         return OutboxEntry(
             entry_id=row["entry_id"],
@@ -461,16 +525,20 @@ class TransactionalOutbox:
         )
 
     def _row_to_dead_letter(self, row: sqlite3.Row) -> DeadLetterEntry:
-        import json as _json
-
+        event_created_at = row["event_created_at"]
+        if event_created_at:
+            created_at = parse_timestamp(event_created_at, "dead_letter.event_created_at")
+        else:
+            created_at = datetime.fromtimestamp(row["created_at"], tz=timezone.utc)
         event = Event(
             kind=row["kind"],
             source=row["source"],
-            payload=_json.loads(row["payload"]),
-            severity=__import__("nexus_core.events", fromlist=["Severity"]).Severity(
-                "info"
-            ),
+            payload=_decode_payload(row["payload"]),
+            severity=Severity(row["severity"] or Severity.INFO.value),
             event_id=row["event_id"],
+            correlation_id=row["correlation_id"],
+            created_at=created_at,
+            dedup=row["dedup_key"] is not None,
         )
         return DeadLetterEntry(
             entry_id=row["entry_id"],

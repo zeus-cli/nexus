@@ -87,6 +87,7 @@ label span { color: var(--muted); }
 .memory-card h3 { margin: 0 0 7px; font-size: 14px; }
 .memory-card p { margin: 0; color: #c7d9d1; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
 .memory-card .memory-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 13px; color: var(--muted); font-size: 10px; }
+.approval-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin: 12px 0; color: var(--muted); font-size: 10px; }
 .memory-card .delete { border: 0; padding: 3px 5px; color: #ff9b9b; background: transparent; font-size: 11px; }
 .model-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .model-card { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }

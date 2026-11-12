@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .sqlite_utils import connect_db
+
 
 class ApprovalStatus(Enum):
     PENDING = "PENDING"
@@ -63,7 +65,7 @@ class ApprovalManager:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("""
@@ -124,7 +126,7 @@ class ApprovalManager:
         req_id = uuid.uuid4().hex
         params_hash = self._canonicalize_and_hash(req)
         now = time.time()
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("""
                 INSERT INTO approvals (
                     id, task_id, plan_id, tool_id, params_hash, access_level, 
@@ -142,7 +144,7 @@ class ApprovalManager:
 
     def decide(self, request_id: str, decision: ApprovalDecision) -> None:
         status = ApprovalStatus.APPROVED.value if decision.decision == "APPROVED" else ApprovalStatus.DENIED.value
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             res = conn.execute(
                 "UPDATE approvals SET status = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = ?",
                 (status, decision.timestamp, decision.approver, request_id, ApprovalStatus.PENDING.value)
@@ -152,7 +154,7 @@ class ApprovalManager:
             conn.commit()
 
     def claim_approval(self, request_id: str) -> bool:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 row = conn.execute(
@@ -178,7 +180,7 @@ class ApprovalManager:
 
     def mark_starting(self, request_id: str) -> None:
         """Transitions approval to CONSUMED and execution to STARTING before subprocess launch."""
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 res = conn.execute(
@@ -198,7 +200,7 @@ class ApprovalManager:
                 raise
 
     def update_execution_status(self, request_id: str, status: ExecutionStatus, summary: str | None = None) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute(
                 "UPDATE executions SET status = ?, completed_at = ?, result_summary = ? WHERE approval_id = ?",
                 (status.value, time.time() if status in (ExecutionStatus.COMPLETED, ExecutionStatus.FAILED) else None, summary, request_id)
@@ -206,7 +208,7 @@ class ApprovalManager:
             conn.commit()
 
     def revoke(self, request_id: str) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             res = conn.execute(
                 "UPDATE approvals SET status = ? WHERE id = ? AND status IN (?, ?)",
                 (ApprovalStatus.REVOKED.value, request_id, ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value)
@@ -217,7 +219,7 @@ class ApprovalManager:
 
     def expire_stale(self) -> int:
         now = time.time()
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             res = conn.execute(
                 "UPDATE approvals SET status = ? WHERE expires_at < ? AND status IN (?, ?)",
                 (ApprovalStatus.EXPIRED.value, now, ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value)
@@ -228,7 +230,7 @@ class ApprovalManager:
 
     def verify_action(self, request_id: str, req: ApprovalRequest) -> bool:
         current_hash = self._canonicalize_and_hash(req)
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             row = conn.execute(
                 "SELECT params_hash FROM approvals WHERE id = ?", (request_id,)
             ).fetchone()
@@ -239,7 +241,7 @@ class ApprovalManager:
     def recover_orphans(self, timeout_s: float = 300.0) -> int:
         """Finds CLAIMED approvals with old STARTING/PREPARED executions and marks them UNKNOWN."""
         now = time.time()
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             orphans = conn.execute(
                 "SELECT approval_id FROM executions WHERE status IN (?, ?, ?) AND started_at < ?",
                 (ExecutionStatus.STARTING.value, ExecutionStatus.RUNNING.value, ExecutionStatus.PREPARED.value, now - timeout_s)
@@ -253,13 +255,13 @@ class ApprovalManager:
             return count
 
     def list_pending(self) -> list[dict[str, Any]]:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM approvals WHERE status = ?", (ApprovalStatus.PENDING.value,)).fetchall()
             return [dict(r) for r in rows]
 
     def get_request(self, request_id: str) -> dict[str, Any] | None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM approvals WHERE id = ?", (request_id,)).fetchone()
             return dict(row) if row else None
@@ -276,7 +278,7 @@ class ApprovalManager:
         sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql, tuple(params)).fetchall()
             return [dict(r) for r in rows]

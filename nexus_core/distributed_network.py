@@ -25,7 +25,7 @@ from typing import Any, Callable, Mapping
 
 import websockets
 
-from .events import Event
+from .events import Event, parse_timestamp
 from .distributed_node import DistributedNode, NodeRole, NodeStatus
 
 
@@ -131,7 +131,7 @@ class DistributedNetworkServer:
                         {
                             "type": "heartbeat_ack",
                             "node_id": node_id,
-                            "timestamp": time.monotonic(),
+                            "timestamp": time.time(),
                         },
                     )
                 elif msg_type == "goodbye":
@@ -150,14 +150,20 @@ class DistributedNetworkServer:
 
     @staticmethod
     def _event_from_message(data: Mapping[str, Any]) -> Event:
-        return Event(
-            kind=data.get("kind", "unknown"),
-            source=data.get("source", "remote"),
-            payload=data.get("payload", {}),
-            severity=data.get("severity", "info"),
-            event_id=data.get("event_id", uuid.uuid4().hex),
-            correlation_id=data.get("correlation_id"),
-        )
+        values: dict[str, Any] = {
+            "kind": data.get("kind", "unknown"),
+            "source": data.get("source", "remote"),
+            "payload": data.get("payload", {}),
+            "severity": data.get("severity", "info"),
+            "event_id": data.get("event_id", uuid.uuid4().hex),
+            "correlation_id": data.get("correlation_id"),
+            "dedup": bool(data.get("dedup", True)),
+        }
+        if data.get("created_at"):
+            values["created_at"] = parse_timestamp(
+                data["created_at"], "event.created_at"
+            )
+        return Event(**values)
 
     @property
     def connected_clients(self) -> int:
@@ -218,7 +224,7 @@ class DistributedNetworkClient:
                     {
                         "type": "hello",
                         "node_id": self.node_id,
-                        "timestamp": time.monotonic(),
+                        "timestamp": time.time(),
                     },
                 )
             except Exception as exc:
@@ -246,7 +252,9 @@ class DistributedNetworkClient:
             "severity": event.severity.value,
             "payload": event.payload,
             "correlation_id": event.correlation_id,
-            "timestamp": time.monotonic(),
+            "created_at": event.created_at.isoformat(),
+            "dedup": event.dedup,
+            "timestamp": time.time(),
             "sender_node_id": self.node_id,
         }
         sent = 0
@@ -271,7 +279,7 @@ class DistributedNetworkClient:
                     {
                         "type": "heartbeat",
                         "node_id": self.node_id,
-                        "timestamp": time.monotonic(),
+                        "timestamp": time.time(),
                     },
                     separators=(",", ":"),
                 )
@@ -316,14 +324,20 @@ class DistributedNetworkClient:
 
     @staticmethod
     def _event_from_message(data: Mapping[str, Any]) -> Event:
-        return Event(
-            kind=data.get("kind", "unknown"),
-            source=data.get("source", "remote"),
-            payload=data.get("payload", {}),
-            severity=data.get("severity", "info"),
-            event_id=data.get("event_id", uuid.uuid4().hex),
-            correlation_id=data.get("correlation_id"),
-        )
+        values: dict[str, Any] = {
+            "kind": data.get("kind", "unknown"),
+            "source": data.get("source", "remote"),
+            "payload": data.get("payload", {}),
+            "severity": data.get("severity", "info"),
+            "event_id": data.get("event_id", uuid.uuid4().hex),
+            "correlation_id": data.get("correlation_id"),
+            "dedup": bool(data.get("dedup", True)),
+        }
+        if data.get("created_at"):
+            values["created_at"] = parse_timestamp(
+                data["created_at"], "event.created_at"
+            )
+        return Event(**values)
 
     @property
     def connected_count(self) -> int:
@@ -366,7 +380,7 @@ class DistributedNetwork:
                 address=address,
                 role=role,
                 connected=True,
-                last_heartbeat=time.monotonic(),
+                last_heartbeat=time.time(),
             )
 
     async def broadcast_event(self, event: Event) -> int:

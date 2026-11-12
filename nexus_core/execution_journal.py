@@ -18,10 +18,12 @@ import json
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Mapping
+
+from .sqlite_utils import connect_db
 
 
 class ExecutionStatusJournal(Enum):
@@ -109,7 +111,7 @@ class ExecutionJournal:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
@@ -216,7 +218,7 @@ class ExecutionJournal:
             created_at=entry.created_at,
         )
 
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO execution_journal
@@ -258,14 +260,16 @@ class ExecutionJournal:
         error: str | None = None,
     ) -> bool:
         """Atualiza o status de uma entrada existente (apenas uma vez por campo final)."""
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT entry_id, status FROM execution_journal WHERE request_id = ? ORDER BY created_at DESC LIMIT 1",
                 (request_id,),
             ).fetchone()
             if row is None:
                 return False
-            entry_id, current_status = row
+            entry_id = row["entry_id"]
+            current_status = row["status"]
             # Não permite regressão de status final.
             final_statuses = {
                 ExecutionStatusJournal.COMPLETED,
@@ -283,7 +287,7 @@ class ExecutionJournal:
                     "SELECT started_at FROM execution_journal WHERE entry_id = ?", (entry_id,)
                 ).fetchone()
                 if started_row:
-                    duration_ms = (completed_at - started_row[0]) * 1000.0
+                    duration_ms = (completed_at - started_row["started_at"]) * 1000.0
 
             conn.execute(
                 """
@@ -300,11 +304,22 @@ class ExecutionJournal:
                     entry_id,
                 ),
             )
+            # O hash cobre status/resultado/timestamps: sem recalculá-lo aqui,
+            # qualquer atualização legítima apareceria como corrupção.
+            updated = conn.execute(
+                "SELECT * FROM execution_journal WHERE entry_id = ?", (entry_id,)
+            ).fetchone()
+            if updated is not None:
+                integrity_hash = self._row_to_entry(updated)._compute_hash()
+                conn.execute(
+                    "UPDATE execution_journal SET integrity_hash = ? WHERE entry_id = ?",
+                    (integrity_hash, entry_id),
+                )
             conn.commit()
         return True
 
     def get_entry(self, entry_id: str) -> ExecutionJournalEntry | None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM execution_journal WHERE entry_id = ?", (entry_id,)
@@ -314,7 +329,7 @@ class ExecutionJournal:
             return self._row_to_entry(row)
 
     def get_by_request(self, request_id: str) -> list[ExecutionJournalEntry]:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM execution_journal WHERE request_id = ? ORDER BY created_at DESC",
@@ -330,7 +345,7 @@ class ExecutionJournal:
         limit: int = 100,
         offset: int = 0,
     ) -> list[ExecutionJournalEntry]:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             sql = "SELECT * FROM execution_journal"
             params: list[Any] = []
@@ -350,10 +365,9 @@ class ExecutionJournal:
 
     def verify_all_integrity(self) -> dict[str, Any]:
         """Verifica a integridade de todas as entradas do journal."""
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM execution_journal").fetchall()
-            conn.row_factory = sqlite3.Row
             total = 0
             invalid = 0
             for row in rows:

@@ -582,6 +582,19 @@ def create_app(
         pending = api.list_pending()
         return {"items": pending, "count": len(pending)}
 
+    # Rotas estáticas devem ser declaradas antes da rota dinâmica
+    # ``/approvals/{request_id}``; caso contrário "history" é interpretado
+    # como um request_id.
+    @app.get(f"{API_PREFIX}/approvals/history", dependencies=[read])
+    async def approval_history(
+        limit: int = Query(default=100, ge=1, le=1000),
+        status: str | None = None,
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        api = ApprovalAPI(runtime.approvals)
+        items = api.get_history(limit=limit, status=status, offset=offset)
+        return {"items": items, "count": len(items), "limit": limit, "offset": offset}
+
     @app.get(f"{API_PREFIX}/approvals/{{request_id}}", dependencies=[read])
     async def get_approval(request_id: str) -> dict[str, Any]:
         api = ApprovalAPI(runtime.approvals)
@@ -620,16 +633,6 @@ def create_app(
             )
         )
         return {"request_id": request_id, "decision": body.decision, "status": action}
-
-    @app.get(f"{API_PREFIX}/approvals/history", dependencies=[read])
-    async def approval_history(
-        limit: int = Query(default=100, ge=1, le=1000),
-        status: str | None = None,
-        offset: int = Query(default=0, ge=0),
-    ) -> dict[str, Any]:
-        api = ApprovalAPI(runtime.approvals)
-        items = api.get_history(limit=limit, status=status, offset=offset)
-        return {"items": items, "count": len(items), "limit": limit, "offset": offset}
 
     # -- agentes (Fase 4) ---------------------------------------------------
     @app.get(f"{API_PREFIX}/agents", dependencies=[read])
@@ -709,9 +712,14 @@ def create_app(
         mgr = runtime.scenario_manager
         if mgr is None:
             raise HTTPException(status_code=404, detail="scenario manager not available")
+        paradigm_raw = str(body.get("paradigm", "agent_based"))
+        try:
+            paradigm = SimulationParadigm[paradigm_raw.upper()]
+        except KeyError:
+            raise HTTPException(status_code=422, detail=f"paradigm inválido: {paradigm_raw}")
         try:
             params = SimulationParameters(
-                paradigm=SimulationParadigm[body.get("paradigm", "AGENT_BASED")],
+                paradigm=paradigm,
                 random_seed=body.get("random_seed"),
                 max_steps=body.get("max_steps"),
             )

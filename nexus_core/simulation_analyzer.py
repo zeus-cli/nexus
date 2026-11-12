@@ -21,9 +21,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from .simulation_types import SimulationResult, WorldStatus
+from .simulation_types import EventType, SimulationEvent, SimulationResult, WorldStatus
+from .sqlite_utils import connect_db
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +37,7 @@ class SimulationAnalysis:
     metrics_comparison: dict[str, Any]
     outliers: tuple[str, ...]
     insights: tuple[str, ...]
-    created_at: float = field(default_factory=lambda: time.monotonic())
+    created_at: float = field(default_factory=lambda: time.time())
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -117,7 +118,7 @@ class ResultsStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
@@ -178,7 +179,7 @@ class ResultsStore:
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
 
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO simulation_results
@@ -201,14 +202,14 @@ class ResultsStore:
                     result.label,
                     metadata_json,
                     integrity_hash,
-                    time.monotonic(),
+                    time.time(),
                 ),
             )
             conn.commit()
         return result_id
 
     def get_result(self, result_id: str) -> SimulationResult | None:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM simulation_results WHERE result_id = ?", (result_id,)
@@ -226,7 +227,7 @@ class ResultsStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[SimulationResult]:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             sql = "SELECT * FROM simulation_results"
             params: list[Any] = []
@@ -249,7 +250,7 @@ class ResultsStore:
 
     def verify_integrity(self, result_id: str | None = None) -> dict[str, Any]:
         """Verifica a integridade de um resultado ou de todos."""
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             if result_id is not None:
                 rows = conn.execute(
@@ -282,7 +283,7 @@ class ResultsStore:
             return {"total": total, "invalid": invalid, "ok": invalid == 0}
 
     def delete_result(self, result_id: str) -> bool:
-        with sqlite3.connect(self._db_path) as conn:
+        with connect_db(self._db_path) as conn:
             res = conn.execute(
                 "DELETE FROM simulation_results WHERE result_id = ?", (result_id,)
             )
@@ -295,7 +296,7 @@ class ResultsStore:
             experiment_id=row["experiment_id"],
             status=WorldStatus[row["status"]],
             final_state=json.loads(row["final_state"]),
-            events=[],
+            events=self._events_from_json(row["events"]),
             metrics=json.loads(row["metrics"]) if row["metrics"] else {},
             started_at=row["started_at"],
             completed_at=row["completed_at"],
@@ -304,6 +305,28 @@ class ResultsStore:
             integrity_hash=row["integrity_hash"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
         )
+
+    @staticmethod
+    def _events_from_json(raw: str | None) -> tuple[SimulationEvent, ...]:
+        """Reconstrói os eventos persistidos para não invalidar o hash."""
+        if not raw:
+            return ()
+        events: list[SimulationEvent] = []
+        for item in json.loads(raw):
+            events.append(
+                SimulationEvent(
+                    event_id=item["event_id"],
+                    world_id=item["world_id"],
+                    event_type=EventType[item["event_type"]],
+                    entity_id=item.get("entity_id"),
+                    timestamp=item["timestamp"],
+                    payload=item.get("payload", {}),
+                    caused_by=item.get("caused_by"),
+                    correlation_id=item.get("correlation_id"),
+                    metadata=item.get("metadata", {}),
+                )
+            )
+        return tuple(events)
 
 
 __all__ = [
