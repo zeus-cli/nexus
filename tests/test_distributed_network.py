@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -75,7 +76,14 @@ async def test_server_receives_event():
         )
         await ws.recv()  # hello_ack
 
-        event = Event(kind="test.remote", source="remote", payload={"data": "hello"})
+        created_at = datetime(2026, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+        event = Event(
+            kind="test.remote",
+            source="remote",
+            payload={"data": "hello"},
+            created_at=created_at,
+            dedup=False,
+        )
         await ws.send(
             json.dumps(
                 {
@@ -85,6 +93,8 @@ async def test_server_receives_event():
                     "source": event.source,
                     "severity": event.severity.value,
                     "payload": event.payload,
+                    "created_at": event.created_at.isoformat(),
+                    "dedup": event.dedup,
                     "timestamp": 1.0,
                 }
             )
@@ -96,6 +106,8 @@ async def test_server_receives_event():
 
         assert len(received) == 1
         assert received[0].kind == "test.remote"
+        assert received[0].created_at == created_at
+        assert received[0].dedup is False
 
     await server.stop()
 

@@ -16,6 +16,33 @@ class CliParserTest(unittest.TestCase):
         args = build_parser().parse_args(["desktop", "--no-start"])
         self.assertTrue(args.no_start)
 
+    def test_config_option_is_accepted_before_and_after_subcommand(self) -> None:
+        before = build_parser().parse_args(["--config", "config/nexus.toml", "serve"])
+        after = build_parser().parse_args(["serve", "--config", "config/nexus.toml"])
+        self.assertEqual(before.config, "config/nexus.toml")
+        self.assertEqual(after.config, "config/nexus.toml")
+
+    def test_config_option_is_accepted_after_nested_subcommand(self) -> None:
+        args = build_parser().parse_args(
+            ["llm", "models", "--config", "config/nexus.toml"]
+        )
+        self.assertEqual(args.config, "config/nexus.toml")
+
+    def test_global_options_are_accepted_before_nested_subcommand(self) -> None:
+        args = build_parser().parse_args(
+            ["--config", "config/nexus.toml", "--json", "llm", "models"]
+        )
+        self.assertEqual(args.config, "config/nexus.toml")
+        self.assertTrue(args.json)
+
+    def test_json_option_is_accepted_after_subcommand(self) -> None:
+        args = build_parser().parse_args(["status", "--json"])
+        self.assertTrue(args.json)
+
+    def test_json_option_is_accepted_after_nested_subcommand(self) -> None:
+        args = build_parser().parse_args(["events", "list", "--json"])
+        self.assertTrue(args.json)
+
     def test_logs_line_limit_option(self) -> None:
         args = build_parser().parse_args(["logs", "--lines", "25"])
         self.assertEqual(args.lines, 25)

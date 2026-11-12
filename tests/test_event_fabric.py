@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -88,6 +91,47 @@ def test_outbox_max_attempts_moves_to_dead_letter(tmp_path):
     assert dead[0].reason == "error 2"
 
 
+def test_outbox_persists_epoch_and_preserves_event_metadata(tmp_path):
+    """O outbox deve usar tempo de parede e reconstruir o evento fielmente."""
+    outbox = TransactionalOutbox(tmp_path / "outbox.db")
+    created_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    ev = Event(
+        kind="test.event",
+        source="test",
+        payload={"x": 1},
+        severity=Severity.WARNING,
+        correlation_id="corr-1",
+        created_at=created_at,
+    )
+    entry_id = outbox.enqueue(ev)
+
+    entry = outbox.get_pending()[0]
+    assert entry.entry_id == entry_id
+    assert entry.created_at > 1_000_000_000  # epoch, não time.monotonic()
+    assert entry.event.created_at == created_at
+    assert entry.event.severity == Severity.WARNING
+    assert entry.event.correlation_id == "corr-1"
+    assert entry.event.dedup_key() == ev.dedup_key()
+
+
+def test_outbox_reads_legacy_envelope_payload(tmp_path):
+    """Bancos antigos guardavam Event.to_dict(); o payload deve ser extraído."""
+    db_path = tmp_path / "outbox.db"
+    outbox = TransactionalOutbox(db_path)
+    ev = Event(kind="test.event", source="test", payload={"x": 1})
+    entry_id = outbox.enqueue(ev)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE outbox SET payload = ? WHERE entry_id = ?",
+            (json.dumps(ev.to_dict(), sort_keys=True, separators=(",", ":")), entry_id),
+        )
+        conn.commit()
+
+    entry = outbox.get_pending()[0]
+    assert entry.event.payload == {"x": 1}
+
+
 def test_outbox_stats(tmp_path):
     """Estatísticas do outbox devem refletir o estado."""
     outbox = TransactionalOutbox(tmp_path / "outbox.db")
@@ -125,6 +169,33 @@ def test_dead_letter_list_and_requeue(tmp_path):
     # Deve aparecer como pendente no outbox.
     pending = outbox.get_pending()
     assert len(pending) == 1
+
+
+def test_dead_letter_preserves_metadata_across_requeue(tmp_path):
+    """Dead-letter e reenfileiramento não devem perder severidade/correlação."""
+    outbox = TransactionalOutbox(tmp_path / "outbox.db")
+    created_at = datetime(2026, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+    ev = Event(
+        kind="test.event",
+        source="test",
+        payload={"x": 1},
+        severity=Severity.ERROR,
+        correlation_id="corr-2",
+        created_at=created_at,
+    )
+    entry_id = outbox.enqueue(ev, max_attempts=1)
+    assert outbox.mark_failed(entry_id, "permanent error") is True
+
+    dead = outbox.list_dead_letter()[0]
+    assert dead.event.severity == Severity.ERROR
+    assert dead.event.correlation_id == "corr-2"
+    assert dead.event.created_at == created_at
+
+    assert outbox.requeue_from_dead_letter(dead.entry_id) is True
+    pending = outbox.get_pending()[0]
+    assert pending.event.severity == Severity.ERROR
+    assert pending.event.correlation_id == "corr-2"
+    assert pending.event.created_at == created_at
 
 
 def test_dead_letter_processor_stats(tmp_path):

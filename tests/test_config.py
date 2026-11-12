@@ -13,6 +13,7 @@ from nexus_core.config import (
     ConfigError,
     config_from_mapping,
     find_project_root,
+    is_loopback_host,
     load_config,
 )
 
@@ -95,6 +96,22 @@ class ValidationTest(unittest.TestCase):
 
     def test_non_loopback_api_host_is_rejected(self) -> None:
         self.assert_invalid('[api]\nhost = "0.0.0.0"\n', "loopback")
+
+    def test_localhost_is_a_valid_loopback_api_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_project(Path(tmp), '[api]\nhost = "localhost"\n')
+            config = load_config(path)
+        self.assertEqual(config.api.host, "localhost")
+
+    def test_loopback_host_accepts_ip_and_localhost_forms(self) -> None:
+        for host in ("127.0.0.1", "127.0.0.2", "::1", "[::1]", "localhost", "LOCALHOST",
+                     "api.localhost"):
+            with self.subTest(host=host):
+                self.assertTrue(is_loopback_host(host))
+
+        for host in ("0.0.0.0", "192.168.1.4", "example.com", "", "localhost.example.com"):
+            with self.subTest(host=host):
+                self.assertFalse(is_loopback_host(host))
 
     def test_enabled_remote_provider_requires_https(self) -> None:
         self.assert_invalid(

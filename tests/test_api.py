@@ -315,6 +315,20 @@ class EventsApiTest(ApiTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["limit"], 500)
 
+    def test_approvals_history_route_is_not_shadowed_by_request_id(self) -> None:
+        response = self.client.get("/api/v1/approvals/history", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("items", response.json())
+
+    def test_simulation_scenario_accepts_lowercase_paradigm(self) -> None:
+        response = self.client.post(
+            "/api/v1/simulations/scenarios",
+            headers=self.headers,
+            json={"name": "cenário", "world_id": "w-1", "paradigm": "agent_based"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["parameters"]["paradigm"], "AGENT_BASED")
+
     def test_telemetry_endpoints(self) -> None:
         self.client.post(
             "/api/v1/events", headers=self.headers, json={"kind": "agent.step", "payload": {"n": 1}}

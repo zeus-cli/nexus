@@ -374,11 +374,21 @@ def test_simulation_analyzer():
 def test_results_store_persist_and_verify():
     with tempfile.TemporaryDirectory() as tmpdir:
         store = ResultsStore(Path(tmpdir) / "sim.db")
+        event = SimulationEvent(
+            event_id="ev-1",
+            world_id="w-1",
+            event_type=EventType.STATE_CHANGE,
+            entity_id="agent-1",
+            timestamp=123.5,
+            payload={"state": "running"},
+            metadata={"source": "test"},
+        )
         r = SimulationResult(
             world_id="w-1",
             experiment_id="exp-1",
             status=WorldStatus.COMPLETED,
             final_state={"x": 1},
+            events=(event,),
             label="simulated",
             metrics={"cpu": 50.0},
         )
@@ -388,6 +398,7 @@ def test_results_store_persist_and_verify():
         assert r2 is not None
         assert r2.world_id == "w-1"
         assert r2.label == "simulated"
+        assert r2.events == (event,)
         report = store.verify_integrity(rid)
         assert report["ok"] is True
 

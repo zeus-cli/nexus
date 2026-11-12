@@ -351,6 +351,9 @@ def test_execution_journal_update_status():
         entry = journal.get_entry(eid)
         assert entry.status == ExecutionStatusJournal.COMPLETED
         assert entry.result == {"uptime": "10 mins"}
+        # Atualizações legítimas de status precisam atualizar o hash.
+        assert entry.verify_integrity() is True
+        assert journal.verify_all_integrity()["ok"] is True
 
 
 def test_execution_journal_list_and_integrity():
