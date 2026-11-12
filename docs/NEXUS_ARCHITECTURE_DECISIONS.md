@@ -1,8 +1,11 @@
 # NEXUS Architecture Decisions
 
-**Versão:** 1.0  
+**Versão:** 1.1
+**Atualizado:** 2026-11-12
 **Projeto:** NEXUS — Cognitive Operating System  
 **Escopo:** Registro de decisões arquiteturais (ADRs) — contexto, problema, alternativas, decisão, consequências, implicações de segurança e migração.
+
+> **Nota:** os ADRs 0001–0013 são registros históricos e preservam as contagens de testes da data original. O ADR 0014 consolida o endurecimento da auditoria de 2026-11-12 e o estado atual de validação.
 
 ---
 
@@ -102,3 +105,4 @@ Control Plane funcional, independente de LLM. Sinais de SO não tratados (encerr
 | 0011 | NEXUS Integration Layer (Fase 7 - Integração Final) — Python | aceito |
 | 0012 | Event Fabric: Transactional Outbox e Dead-Letter Queue (Fase 7+) — Python | aceito |
 | 0013 | Distributed Network: WebSocket entre nós (Fase 7+) — Python | aceito |
+| 0014 | Endurecimento pós-auditoria: SQLite, Event Fabric, VectorStore e CLI — Python | aceito |

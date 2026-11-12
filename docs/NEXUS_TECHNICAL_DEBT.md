@@ -1,8 +1,8 @@
 # NEXUS Technical Debt
 
-**Versão:** 1.0  
-**Projeto:** NEXUS — Cognitive Operating System  
-**Data:** 2026-11-07
+**Versão:** 1.1
+**Projeto:** NEXUS — Cognitive Operating System
+**Atualizado:** 2026-11-12
 
 Registro de dívida técnica conhecida, com prioridade, estado e próxima ação. Mantido como fonte da verdade para planejamento de refatoração.
 
@@ -18,23 +18,23 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-002 — Systemd units não ativadas (P0) — Open
+## TD-002 — Systemd units (P0) — RESOLVIDO (2026-11-12)
 
-**Descrição:** `systemd/nexus-core.service` e `systemd/nexus-sentinel.service` existem mas não estão implantadas/ativadas. O sistema só sobe manualmente (`nexus serve` / `nexus run`).
+**Descrição:** `systemd/nexus-core.service` e `systemd/nexus-sentinel.service` existem e foram implantadas/ativadas como units de usuário.
 
-**Impacto:** Sem auto-start nem recuperação de falhas; não pronto para produção.
+**Resolução:** `systemctl --user is-active` e `is-enabled` reportam `active`/`enabled` para ambos os serviços. O sistema inicia automaticamente e sobrevive a reinícios do usuário.
 
-**Próxima ação:** Implantar e ativar as units (`systemctl --user enable --now`); verificar `systemd-analyze --user verify`.
+**Próxima ação:** manter a validação de `systemd-analyze --user verify` em CI ou checklist de release.
 
 ---
 
-## TD-003 — Memória somente lexical (P2) — Open
+## TD-003 — Memória somente lexical (P2) — RESOLVIDO (2026-11-12)
 
-**Descrição:** Busca por FTS5 lexical; vetor/semântico existe (LanceDB) mas não integrado como busca híbrida prioritária em todos os caminhos.
+**Descrição:** Busca por FTS5 lexical; vetor/semântico via LanceDB foi integrado ao caminho híbrido.
 
-**Impacto:** Busca semântica limitada; memória não aproveita similaridade vetorial.
+**Resolução:** `MemoryStore.search(..., hybrid=True)` combina busca lexical e vetorial com Reciprocal Rank Fusion. O `VectorStore` foi endurecido para compatibilidade com APIs antiga/nova do LanceDB, escape seguro de filtros e `upsert` idempotente (sem duplicatas).
 
-**Próxima ação:** Consolidar busca híbrida (lexical + vetorial com RRF) como padrão.
+**Próxima ação:** manter testes de regressão em `tests/test_vector.py` e `tests/test_hybrid_memory.py`.
 
 ---
 
@@ -58,13 +58,13 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-006 — Hardware limitado para modelos locais (P4) — Open
+## TD-006 — Hardware limitado para modelos locais (P4) — PARCIAL
 
-**Descrição:** Host (i3, 11-12 GB RAM) insuficiente para modelos grandes (Gemma 4 12B/31B) localmente.
+**Descrição:** Host (i3, 11–12 GB RAM) não comporta confortavelmente modelos grandes (Gemma 4 12B/31B) localmente.
 
-**Impacto:** Dependência de modelo remoto ou Ollama leve; falha de tarefas cognitivas se LLM indisponível.
+**Mitigação atual:** o Ollama local roda `nexusorbe-llama3.1:latest` (8B) e `nexusorbe-llama3.2:latest` (3B); modelos remotos maiores são usados via OpenCode em outro host. O NEXUS mantém a cadeia local por política de egress.
 
-**Próxima ação:** Adicionar modelo de fallback leve ou planejamento determinístico sem LLM; benchmarkar em host com GPU/RAM maior.
+**Próxima ação:** benchmarkar em host com GPU/RAM maior; manter fallback leve local para indisponibilidade de LLM.
 
 ---
 
@@ -86,7 +86,9 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 **Impacto:** Pode bloquear o event loop sob carga.
 
-**Próxima ação:** Envolver chamadas em `tokio::task::spawn_blocking` ou migrar para assíncrono.
+**Mitigação parcial (2026-11-12):** `nexus_core/sqlite_utils.py::connect_db` aplica `busy_timeout`, commit/rollback e fechamento garantido, reduzindo contenção e conexões vazadas.
+
+**Próxima ação:** Envolver chamadas em `asyncio.to_thread`/`tokio::task::spawn_blocking` ou migrar para driver assíncrono.
 
 ---
 
@@ -142,13 +144,13 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-014 — Nenhum modelo de fallback sem LLM (P1) — Open
+## TD-014 — Nenhum modelo de fallback sem LLM (P1) — PARCIAL
 
-**Descrição:** O loop cognitivo falha se o provedor LLM (Ollama) estiver indisponível. Não há planejamento determinístico sem LLM.
+**Descrição:** O loop cognitivo falha se todos os provedores LLM estiverem indisponíveis. A cadeia local tem fallback entre modelos, mas não há planejamento determinístico sem LLM.
 
-**Impacto:** Indisponibilidade total de tarefas cognitivas sem LLM.
+**Impacto:** Indisponibilidade total de tarefas cognitivas se todo o chain falhar.
 
-**Próxima ação:** Adicionar modelo leve local ou planejador determinístico como fallback.
+**Próxima ação:** Adicionar planejador determinístico como fallback final.
 
 ---
 
@@ -156,11 +158,11 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 | Prioridade | Itens |
 |------------|-------|
-| P0 | TD-001, TD-002, TD-010 |
-| P1 | TD-007, TD-008, TD-012, TD-014, TD-015, TD-016 |
-| P2 | TD-003, TD-005, TD-009, TD-013, TD-017 |
+| P0 | TD-001, TD-010 (abertos); TD-002 (resolvido) |
+| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-015, TD-016, TD-018 (resolvido), TD-020 |
+| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019 |
 | P3 | TD-004 |
-| P4 | TD-006 |
+| P4 | TD-006 (parcial) |
 
 ---
 
@@ -184,10 +186,40 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-017 — Event Fabric completo e rede remota entre nós (P2) — Open
+## TD-017 — Event Fabric completo e rede remota entre nós (P2) — RESOLVIDO (2026-11-12)
 
-**Descrição:** O Event Fabric atual opera em processo (EventBus + EventStore SQLite). A comunicação remota entre nós do cluster distribuído ainda usa IPC local/UDS; não há rede remota (TCP/WebSocket) nem transactional outbox nem dead-letter queue.
+**Descrição:** O Event Fabric opera em processo (EventBus + EventStore SQLite), com transactional outbox, dead-letter queue e comunicação remota WebSocket entre nós.
 
-**Impacto:** O cluster distribuído está limitado a um único nó físico; não há replicação de eventos entre nós nem entrega garantida com outbox transacional.
+**Resolução:** `event_fabric.py` implementa outbox transacional, retry com backoff e dead-letter; `distributed_network.py` implementa servidor/cliente WebSocket com heartbeat e propagação de eventos preservando `created_at`/dedup.
 
-**Próxima ação:** Estender o IPC para rede remota (WebSocket/TCP), implementar transactional outbox para eventos críticos e dead-letter handler.
+**Próxima ação:** monitorar tamanho da dead-letter queue e métricas de retry em operação distribuída.
+
+---
+
+## TD-018 — Configuração LLM desalinhada do Ollama local (P1) — RESOLVIDO (2026-11-12)
+
+**Descrição:** `config/nexus.toml` referenciava `qwen2.5:7b` e `llama3.1:8b`, ausentes no Ollama local. Toda completion falhava com HTTP 404 antes de chegar ao fallback.
+
+**Resolução:** a cadeia foi alinhada para `nexusorbe-llama3.1:latest` e `nexusorbe-llama3.2:latest`, presentes no host. `nexus llm complete` passou a responder com sucesso.
+
+**Próxima ação:** validar a cadeia no bootstrap ou em `nexus llm models` para detectar divergências entre config e modelos instalados.
+
+---
+
+## TD-019 — Scheduler de background não integrado ao runtime (P2) — Open
+
+**Descrição:** `nexus_core/scheduler.py` implementa tarefas periódicas/cron-like com Execution Gate, mas não está instanciado no runtime, não é exposto pela API e não tem testes dedicados.
+
+**Impacto:** agendamento de background não está disponível na operação normal.
+
+**Próxima ação:** integrar o Scheduler ao bootstrap/API, adicionar testes e documentar o ciclo de vida das tarefas agendadas.
+
+---
+
+## TD-020 — Criptografia do Task Store desativada por padrão (P2) — Open
+
+**Descrição:** `TaskStore` suporta Fernet (com fallback XOR), mas `bootstrap()` cria a instância sem chave. O estado de tarefas suspensas fica em texto claro por padrão.
+
+**Impacto:** prompts, parâmetros e estado de tarefas podem ser lidos por processos do mesmo usuário.
+
+**Próxima ação:** derivar uma chave de `data/secrets/` ou de variável de ambiente e passá-la ao `TaskStore`; documentar migração de arquivos existentes.

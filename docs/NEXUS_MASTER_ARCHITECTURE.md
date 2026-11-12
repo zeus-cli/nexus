@@ -1,6 +1,7 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.0  
+**Versão:** 1.1
+**Atualizado:** 2026-11-12
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
 
@@ -116,8 +117,11 @@ Componentes: World Builder, World Registry, Entity Manager, State Manager, Rules
 | Simulation Analyzer | `nexus_core/simulation_analyzer.py` | Análise comparativa, outliers, insights; Results Store persistente e imutável |
 
 
+### Execution Plane (Python)
+
 Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime, adaptadores (Filesystem, Process, Network, Browser, Application, API, Developer Tools).
-* Todas as operações do mundo real passam pelo Control Plane.
+* Todas as operações do mundo real devem passar pelo Control Plane.
+* **Estado atual:** o `AutomationEngine` aplica `PolicyEngine`/`ApprovalManager` diretamente; o `ExecutionGate` centralizado é opcional e ainda não é injetado pelo bootstrap (TD-015).
 
 **Componentes de Secure Agency da Fase 3 (implementados e testados):**
 
@@ -199,4 +203,28 @@ Componentes pesados são opcionais; máquina de baixo recurso retém o núcleo f
 
 A arquitetura atual segue os princípios: local-first, model-agnostic, modular, persistente, event-driven, secure-by-design, observable, reversible, resource-aware, extensible, reproducible, human-governed.
 
-Gaps principais em relação ao alvo: GTK4 GUI, perfis de recurso implementados como código ativo.
+Gaps principais em relação ao alvo: GTK4 GUI, perfis de recurso implementados como código ativo, catálogo de ferramentas ainda somente-leitura, branding `zeus` remanescente e criptografia do Task Store desativada por padrão.
+
+---
+
+## 8. Estado de validação e hardening (2026-11-12)
+
+A auditoria de 2026-11-12 corrigiu defeitos reais sem alterar os contratos públicos:
+
+| Área | Correção |
+|------|----------|
+| CLI | `--config`/`--json` aceitos antes ou depois de subcomandos aninhados |
+| API | Ordem da rota `/approvals/history`; `paradigm` de cenários normalizado e validado com 422 |
+| Event Fabric | Payload canônico, envelopes legados, metadados de severidade/correlação/dedup, migração de dead-letter |
+| Execution Journal | `integrity_hash` recalculado em `update_status` |
+| Simulation Analyzer | Timestamps epoch, reconstrução de eventos persistidos e integridade |
+| SQLite | `nexus_core/sqlite_utils.py::connect_db` com `busy_timeout`, commit/rollback e fechamento garantido |
+| Task Store | Chave vazia tratada, escrita atômica `0600` com `O_NOFOLLOW`/fsync, leitura UTF-8 |
+| Vector Store | Compatibilidade `list_tables`/`table_names`, escape de literais e `upsert` idempotente |
+| Distributed Network | `created_at`/dedup preservados; timestamps de protocolo e heartbeat em `time.time()` |
+| Frontend | Painel Segurança carrega aprovações pendentes e decide via `/approvals/{id}/decide` |
+| Configuração LLM | Cadeia local alinhada aos modelos Ollama realmente instalados (`nexusorbe-*`) |
+
+**Validação:** 305 testes + 12 subtests passando; `ruff`, `compileall`, `node --check` e `git diff --check` limpos.
+
+**Limitações atuais:** contexto remoto do Ollama fixo em 4096 tokens; Qwen3 é substancialmente mais lento que Gemma 4 no host remoto; o NEXUS não usa o Ollama remoto por exigir HTTPS e autorização explícita para provedores remotos.

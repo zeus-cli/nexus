@@ -7,6 +7,8 @@
 **Primary Languages:** Python 3.12.3 + Rust  
 **Environment:** Linux (Linux Mint/Ubuntu target), local-first, no network dependency required
 
+> **Nota de atualização (2026-11-12):** este relatório é um retrato histórico de 2026-11-07. As Fases 3–7 foram implementadas depois; para o estado atual, consulte a seção **Atualização pós-auditoria (2026-11-12)** no fim deste documento, além de `README.md`, `ARCHITECTURE.md` e `docs/NEXUS_MASTER_ARCHITECTURE.md`.
+
 ---
 
 ## Executive Summary
@@ -514,3 +516,66 @@ Migrate from the current **single-process Python runtime** to the **four-plane a
 - **CREATE:** 10 components (nexus-daemon, Control Plane components, Multi-Agent system, Simulation subsystem, GTK4 GUI, Rollback Manager, SudoBroker, Execution Journal)
 
 **End of audit report.**
+
+---
+
+# Atualização pós-auditoria (2026-11-12)
+
+Esta seção corrige o retrato histórico acima e registra o estado real após as Fases 3–7 e a auditoria de endurecimento.
+
+## Estado atual
+
+- **Versão:** `nexus-core` 0.2.0, 8 commits no `master`.
+- **Testes:** 305 passed, 12 subtests passed (~129 s).
+- **Estáticos:** `ruff` (E9/F63/F7/F82/F821/F822/F823), `compileall`, `node --check` e `git diff --check` limpos.
+- **Serviços:** `nexus-core.service` e `nexus-sentinel.service` ativos e habilitados (`systemctl --user`).
+- **LLM local:** `nexusorbe-llama3.1:latest` e `nexusorbe-llama3.2:latest`, cadeia validada com `nexus llm complete`.
+- **Ollama remoto:** dois modelos (`gemma4:e4b-it-q4_K_M` e `qwen3:4b`) configurados no OpenCode, não no `nexus.toml` por exigência de HTTPS/autorização para provedores remotos.
+
+## Gaps históricos resolvidos
+
+| Gap no relatório original | Estado em 2026-11-12 |
+|---|---|
+| `nexus-daemon` Rust ausente | Implementado em `core/nexus-daemon/`; Python segue como runtime cognitivo |
+| Motores cognitivos ausentes | Implementados: Intent, Context, Reasoning, Decision, Planner, Knowledge |
+| Multi-agente ausente | Implementado: Registry, Manifest, Runtime, Dispatcher, Orchestrator, Collaboration, Adversarial Review, Lifecycle |
+| Simulação universal ausente | Implementada: tipos, clock, state manager, rules, event scheduler, world builder, scenarios, metrics, analyzer, results store |
+| Rollback/SudoBroker/Journal ausentes | Implementados e testados |
+| Event Fabric incompleto | Outbox transacional, dead-letter e rede WebSocket implementados |
+| Sem memória vetorial | LanceDB + Sentence-Transformers + busca híbrida RRF |
+| Systemd não ativado | Units ativas e habilitadas |
+| Test suite timeout | Suíte completa verde em ~129 s |
+| `config/nexus.toml` com modelos ausentes | Alinhado aos modelos Ollama instalados |
+| Dashboard sem aprovações | Painel Segurança com Aprovar/Negar via `/approvals/{id}/decide` |
+
+## Correções da auditoria de 2026-11-12
+
+- CLI: `--config`/`--json` aceitos antes/depois de subcomandos aninhados.
+- API: ordem de `/approvals/history`; `paradigm` normalizado e 422 para inválido.
+- Event Fabric: payload canônico, envelopes legados, dead-letter, metadados de severidade/correlação/dedup.
+- Execution Journal: `integrity_hash` recalculado em `update_status`.
+- Simulation Analyzer: timestamps epoch, reconstrução de eventos e integridade.
+- SQLite: `connect_db` com `busy_timeout`, commit/rollback e fechamento garantido.
+- Task Store: chave vazia, escrita atômica `0600` com `O_NOFOLLOW`/fsync e leitura UTF-8.
+- VectorStore: compatibilidade `list_tables`/`table_names`, escape de filtros e `upsert` sem duplicatas.
+- Distributed Network: timestamps/dedup de eventos e heartbeat em `time.time()`.
+- Web HUD: aprovações pendentes no painel Segurança.
+- Configuração LLM: modelos locais alinhados ao Ollama real.
+
+## Riscos e gaps remanescentes
+
+1. **Branding `zeus`:** logger root e vários loggers ainda usam `zeus` (TD-001/TD-010).
+2. **Catálogo de ferramentas:** apenas 7 diagnósticos read-only; a máquina de execução segura existe, mas não há ações de escrita.
+3. **Task Store:** criptografia opcional desativada por padrão.
+4. **SQLite síncrono em async:** `busy_timeout` reduz contenção, não o bloqueio do event loop.
+5. **Sandbox UID 0:** namespace forte, mas UID não privilegiado seria preferível.
+6. **Sem LLM determinístico:** fallback entre modelos, mas nenhum planejador sem LLM.
+7. **GTK4:** Web HUD é a interface desktop; GUI nativa não implementada.
+8. **Scheduler:** `scheduler.py` existe, mas não está integrado ao runtime/API nem tem testes dedicados.
+9. **Ollama remoto:** contexto fixo de 4096 tokens e Qwen3 lento (~107 s vs ~28 s do Gemma 4) no host atual.
+
+## Classificação atual
+
+- **PRESERVE:** runtime Python, event store, memória, segurança, API, CLI, sentinel Rust.
+- **IMPLEMENTED:** daemon Rust, motores cognitivos, multi-agente, simulação, execução segura, event fabric, rede distribuída.
+- **REMAINING:** GTK4, branding, catálogo de ferramentas amplo, integração do scheduler, criptografia padrão do Task Store, SQLite assíncrono.

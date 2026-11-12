@@ -1,5 +1,7 @@
 # ADR 0013 — Distributed Network: WebSocket entre nós (Fase 7+)
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-07
 - **Escopo:** `nexus_core/distributed_network.py` — comunicação remota entre nós via WebSocket

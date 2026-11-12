@@ -1,5 +1,7 @@
 # ADR 0012 — Event Fabric: Transactional Outbox e Dead-Letter Queue (Fase 7+)
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-07
 - **Escopo:** `nexus_core/event_fabric.py` — Transactional Outbox + Dead-Letter Queue

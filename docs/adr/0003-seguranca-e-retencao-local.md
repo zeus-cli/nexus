@@ -1,5 +1,7 @@
 # ADR 0003 — Dados locais, bind da API e retenção
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-03
 - **Escopo:** permissões do diretório de dados, transporte HTTP local e retenção do event store

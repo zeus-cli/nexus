@@ -1,5 +1,7 @@
 # ADR 0002 — Backend local (Fase 2)
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-03
 - **Escopo:** API HTTP, WebSocket, autenticação local, permissões, ciclo do serviço
@@ -108,7 +110,7 @@ Integração manual com servidor real (uvicorn): `/health`, 401, 200 autenticado
 - [x] API responde em loopback com autenticação obrigatória.
 - [x] Permissão de escrita segue o nível de autonomia, com auditoria.
 - [x] WebSocket entrega eventos em tempo real com filtro e replay.
-- [x] Unit systemd validada (`systemd-analyze --user verify`), ainda não ativada.
+- [x] Unit systemd validada (`systemd-analyze --user verify`). Na data deste ADR ainda não estava ativada; atualmente está ativa e habilitada.
 
 ## Fora de escopo
 

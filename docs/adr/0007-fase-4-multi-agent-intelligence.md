@@ -1,5 +1,7 @@
 # ADR 0007 — Multi-Agent Intelligence: Agent Registry, Runtime, Orchestrator, Collaboration, Adversarial Review (Fase 4)
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-07
 - **Escopo:** `nexus_core/agent_manifest.py`, `agent_registry.py`, `agent_runtime.py`, `task_dispatcher.py`, `agent_orchestrator.py`, `collaboration_engine.py`, `adversarial_review.py`, `agent_lifecycle.py`

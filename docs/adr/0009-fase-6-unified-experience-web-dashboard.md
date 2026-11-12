@@ -1,5 +1,7 @@
 # ADR 0009 — Unified Experience: Web Dashboard aprimorado (Fase 6)
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-07
 - **Escopo:** `nexus_core/web/index.html`, `nexus_core/web/app.js`, `nexus_core/web/app.css`, `nexus_core/api/app.py`, `nexus_core/app.py`

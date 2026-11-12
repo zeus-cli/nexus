@@ -1,5 +1,7 @@
 # ADR 0004 — Core Foundation: nexus-daemon (Fase 1)
 
+> **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+
 - **Status:** aceito
 - **Data:** 2026-11-07
 - **Escopo:** `core/nexus-daemon/` — Control Plane em Rust (Tokio): ciclo de vida de serviços, IPC por Unix Domain Socket, Event Fabric (barramento + persistência), health check, logging estruturado e segurança mínima.
