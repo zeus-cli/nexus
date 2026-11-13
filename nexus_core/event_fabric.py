@@ -55,6 +55,27 @@ def _decode_payload(raw: str) -> dict[str, Any]:
     return dict(data)
 
 
+def _encode_metadata(metadata: Mapping[str, Any] | None) -> str:
+    """Serializa metadados do outbox em JSON canônico."""
+    return json.dumps(
+        dict(metadata or {}),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def _decode_metadata(raw: str | None) -> dict[str, Any]:
+    """Reconstrói metadados persistidos; ``NULL`` (bancos antigos) vira ``{}``."""
+    if not raw:
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("metadata persistida não é um objeto JSON")
+    return dict(data)
+
+
 class OutboxStatus(Enum):
     PENDING = auto()      # aguardando entrega
     DELIVERED = auto()    # entregue com sucesso
@@ -154,7 +175,8 @@ class TransactionalOutbox:
                     next_retry_at REAL,
                     last_error TEXT,
                     recorded_at REAL NOT NULL,
-                    delivered_at REAL
+                    delivered_at REAL,
+                    metadata TEXT
                 )
                 """
             )
@@ -181,7 +203,8 @@ class TransactionalOutbox:
                     created_at REAL NOT NULL,
                     dedup_key TEXT,
                     correlation_id TEXT,
-                    event_created_at TEXT
+                    event_created_at TEXT,
+                    metadata TEXT
                 )
                 """
             )
@@ -189,22 +212,35 @@ class TransactionalOutbox:
                 "CREATE INDEX IF NOT EXISTS ix_dead_letter_created "
                 "ON dead_letter(created_at)"
             )
-            self._migrate_dead_letter(conn)
+            self._migrate_columns(conn, "outbox", {"metadata": "TEXT"})
+            self._migrate_columns(
+                conn,
+                "dead_letter",
+                {
+                    "severity": "TEXT NOT NULL DEFAULT 'info'",
+                    "dedup_key": "TEXT",
+                    "correlation_id": "TEXT",
+                    "event_created_at": "TEXT",
+                    "metadata": "TEXT",
+                },
+            )
             conn.commit()
 
     @staticmethod
-    def _migrate_dead_letter(conn: sqlite3.Connection) -> None:
-        """Adiciona metadados preservados a bancos criados por versões antigas."""
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(dead_letter)")}
-        columns = {
-            "severity": "TEXT NOT NULL DEFAULT 'info'",
-            "dedup_key": "TEXT",
-            "correlation_id": "TEXT",
-            "event_created_at": "TEXT",
+    def _migrate_columns(
+        conn: sqlite3.Connection,
+        table: str,
+        columns: Mapping[str, str],
+    ) -> None:
+        """Adiciona colunas ausentes a bancos criados por versões antigas."""
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})")
         }
         for name, definition in columns.items():
             if name not in existing:
-                conn.execute(f"ALTER TABLE dead_letter ADD COLUMN {name} {definition}")
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                )
 
     def enqueue(
         self,
@@ -224,8 +260,9 @@ class TransactionalOutbox:
                 INSERT INTO outbox
                 (entry_id, event_id, kind, source, severity, payload,
                  dedup_key, correlation_id, created_at, status, attempts,
-                 max_attempts, next_retry_at, last_error, recorded_at, delivered_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_attempts, next_retry_at, last_error, recorded_at, delivered_at,
+                 metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     entry_id,
@@ -244,6 +281,7 @@ class TransactionalOutbox:
                     None,
                     now,
                     None,
+                    _encode_metadata(metadata),
                 ),
             )
             conn.commit()
@@ -323,7 +361,7 @@ class TransactionalOutbox:
                 )
                 # Copia para dead_letter.
                 event_row = conn.execute(
-                    "SELECT event_id, kind, source, severity, payload, dedup_key, correlation_id, created_at FROM outbox WHERE entry_id = ?",
+                    "SELECT event_id, kind, source, severity, payload, dedup_key, correlation_id, created_at, metadata FROM outbox WHERE entry_id = ?",
                     (entry_id,),
                 ).fetchone()
                 if event_row:
@@ -333,8 +371,8 @@ class TransactionalOutbox:
                         INSERT INTO dead_letter
                         (entry_id, original_entry_id, event_id, kind, source, severity,
                          payload, reason, failed_attempts, created_at, dedup_key,
-                         correlation_id, event_created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         correlation_id, event_created_at, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             dead_id,
@@ -350,6 +388,7 @@ class TransactionalOutbox:
                             event_row["dedup_key"],
                             event_row["correlation_id"],
                             event_row["created_at"],
+                            event_row["metadata"],
                         ),
                     )
             else:
@@ -389,8 +428,8 @@ class TransactionalOutbox:
                 INSERT INTO dead_letter
                 (entry_id, original_entry_id, event_id, kind, source, severity,
                  payload, reason, failed_attempts, created_at, dedup_key,
-                 correlation_id, event_created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 correlation_id, event_created_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dead_id,
@@ -406,6 +445,7 @@ class TransactionalOutbox:
                     row["dedup_key"],
                     row["correlation_id"],
                     row["created_at"],
+                    row["metadata"],
                 ),
             )
             conn.execute(
@@ -452,8 +492,9 @@ class TransactionalOutbox:
                 INSERT INTO outbox
                 (entry_id, event_id, kind, source, severity, payload,
                  dedup_key, correlation_id, created_at, status, attempts,
-                 max_attempts, next_retry_at, last_error, recorded_at, delivered_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_attempts, next_retry_at, last_error, recorded_at, delivered_at,
+                 metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_entry_id,
@@ -472,6 +513,7 @@ class TransactionalOutbox:
                     None,
                     now,
                     None,
+                    row["metadata"],
                 ),
             )
             conn.execute(
@@ -521,7 +563,7 @@ class TransactionalOutbox:
             last_error=row["last_error"],
             created_at=row["recorded_at"],
             delivered_at=row["delivered_at"],
-            metadata={},
+            metadata=_decode_metadata(row["metadata"]),
         )
 
     def _row_to_dead_letter(self, row: sqlite3.Row) -> DeadLetterEntry:
@@ -547,7 +589,7 @@ class TransactionalOutbox:
             reason=row["reason"],
             failed_attempts=row["failed_attempts"],
             created_at=row["created_at"],
-            metadata={},
+            metadata=_decode_metadata(row["metadata"]),
         )
 
 

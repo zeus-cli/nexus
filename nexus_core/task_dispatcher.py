@@ -39,7 +39,11 @@ class TaskDispatcher:
         for manifest, state in self._registry.list_agents():
             if exclude_busy and state == AgentState.BUSY:
                 continue
-            if state not in (AgentState.IDLE, AgentState.REGISTERED):
+            if state not in (
+                AgentState.ACTIVE,
+                AgentState.IDLE,
+                AgentState.REGISTERED,
+            ):
                 continue
             if preferred_role is not None and manifest.role != preferred_role:
                 continue

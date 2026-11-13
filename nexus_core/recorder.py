@@ -27,8 +27,8 @@ class EventRecorder:
     async def record(self, event: Event) -> Event:
         """Persiste (idempotente por dedup) e então publica no bus.
 
-        Em caso de duplicidade dentro da janela, o evento já persistido é o que
-        circula no bus — consumidores nunca veem dois fatos iguais.
+        Em caso de duplicidade dentro da janela, o evento já persistido não é
+        republicado — consumidores nunca veem dois fatos iguais.
         """
         stored, inserted = self._store.append(event)
         if not inserted:
@@ -41,6 +41,7 @@ class EventRecorder:
                     "dedup_key": stored.dedup_key(),
                 },
             )
+            return stored
         if self._bus is not None:
             await self._bus.publish(stored)
         return stored

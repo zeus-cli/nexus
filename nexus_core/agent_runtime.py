@@ -174,7 +174,10 @@ class AgentRuntime:
             timeout_s=timeout_s,
         )
         self._tasks[task_id] = task
-        self._registry.set_state(agent_id, AgentState.IDLE)
+        # Criar uma tarefa não torna disponível um agente que já está
+        # executando outra; preservar BUSY evita despacho concorrente indevido.
+        if self._registry.get_state(agent_id) != AgentState.BUSY:
+            self._registry.set_state(agent_id, AgentState.IDLE)
         return task_id
 
     async def execute_task(self, task_id: str) -> AgentExecutionResult:

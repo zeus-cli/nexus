@@ -85,6 +85,8 @@ class AgentLifecycleManager:
         instance = self._instances.get(agent_id)
         if instance is None:
             return False
+        if instance.state == AgentState.TERMINATED:
+            return False
         if instance.state in (AgentState.ACTIVE, AgentState.BUSY):
             return True
         now = time.monotonic()
