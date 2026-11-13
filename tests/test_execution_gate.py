@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock
 from nexus_core.automation import AutomationEngine, Tool, RiskLevel, AccessLevel, ExecutionMode, ApprovalRequired, AutomationDenied
 from nexus_core.approval import ApprovalManager, ApprovalRequest, ApprovalDecision
-from nexus_core.execution_gate import ExecutionGate
+from nexus_core.execution_gate import ExecutionGate, ExecutionGateError, GateDecision
 from nexus_core.policy import PolicyEngine, PolicyDecision as PolicyDec
 from nexus_core.recorder import EventRecorder
 
@@ -46,6 +46,41 @@ async def test_policy_require_approval_high_risk(engine):
         await engine.run("sys.dangerous")
     
     assert excinfo.value.request_id is not None
+
+@pytest.mark.asyncio
+async def test_high_risk_execution_resumes_after_human_approval(tmp_path):
+    approvals = ApprovalManager(db_path=str(tmp_path / "hitl.db"))
+    gate = ExecutionGate(approval_manager=approvals)
+    authorized = await gate.authorize(
+        component_id="automation_engine",
+        tool_id="sys.dangerous",
+        params={"target": "x"},
+        task_id="task-1",
+        risk_level=RiskLevel.HIGH,
+    )
+    assert authorized.decision == GateDecision.REQUIRES_APPROVAL
+    approval_id = authorized.metadata["approval_id"]
+
+    with pytest.raises(ExecutionGateError):
+        await gate.execute(authorized.request_id, runner=lambda params: {"ran": True})
+
+    approvals.decide(
+        approval_id, ApprovalDecision(decision="APPROVED", approver="operator")
+    )
+    outcome = await gate.execute(
+        authorized.request_id, runner=lambda params: {"ran": True}
+    )
+    assert outcome == {
+        "ok": True,
+        "request_id": authorized.request_id,
+        "result": {"ran": True},
+    }
+    assert approvals.get_request(approval_id)["status"] == "CONSUMED"
+
+    # Replay: a execução não pode rodar duas vezes.
+    with pytest.raises(ExecutionGateError):
+        await gate.execute(authorized.request_id, runner=lambda params: {"ran": True})
+
 
 @pytest.mark.asyncio
 async def test_policy_deny_critical_risk(engine):
