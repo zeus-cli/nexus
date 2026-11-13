@@ -137,7 +137,9 @@ class ToolRegistry:
                 expected_type = properties[key].get("type")
                 if expected_type == "string" and not isinstance(value, str):
                     raise ValueError(f"parameter '{key}' must be a string")
-                if expected_type == "integer" and not isinstance(value, int):
+                if expected_type == "integer" and (
+                    not isinstance(value, int) or isinstance(value, bool)
+                ):
                     raise ValueError(f"parameter '{key}' must be an integer")
                 if expected_type == "boolean" and not isinstance(value, bool):
                     raise ValueError(f"parameter '{key}' must be a boolean")
