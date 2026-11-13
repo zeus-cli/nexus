@@ -353,6 +353,18 @@ class EventsApiTest(ApiTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["parameters"]["paradigm"], "AGENT_BASED")
 
+    def test_simulation_world_creation_accepts_name(self) -> None:
+        response = self.client.post(
+            "/api/v1/simulations/worlds",
+            headers=self.headers,
+            json={"name": "mundo base", "paradigm": "agent_based"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["name"], "mundo base")
+        self.assertEqual(body["paradigm"], "AGENT_BASED")
+        self.assertTrue(body["world_id"])
+
     def test_telemetry_endpoints(self) -> None:
         self.client.post(
             "/api/v1/events", headers=self.headers, json={"kind": "agent.step", "payload": {"n": 1}}
