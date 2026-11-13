@@ -187,23 +187,24 @@ class MemoryStore:
     ) -> list[MemoryRecord]:
         if not hybrid:
             return self._search_lexical(query, kind, limit)
-        
+
         lexical_results = self._search_lexical(query, kind, limit)
-        semantic_results = self._search_semantic(query, limit)
-        
-        scores = {}
+        semantic_results = self._search_semantic(query, limit, kind=kind)
+
+        scores: dict[str, float] = {}
         for rank, rec in enumerate(lexical_results):
-            scores[rec.memory_id] = scores.get(rec.memory_id, 0) + 1 / (60 + rank)
+            scores[rec.memory_id] = scores.get(rec.memory_id, 0.0) + 1 / (60 + rank)
         for rank, rec in enumerate(semantic_results):
-            scores[rec.memory_id] = scores.get(rec.memory_id, 0) + 1 / (60 + rank)
-            
+            scores[rec.memory_id] = scores.get(rec.memory_id, 0.0) + 1 / (60 + rank)
+
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-        
-        results = []
+
+        results: list[MemoryRecord] = []
         for mid in sorted_ids[:limit]:
             rec = self.get(mid)
-            if rec: results.append(rec)
-            
+            if rec and (kind is None or rec.kind == kind):
+                results.append(rec)
+
         return results
 
     def _search_lexical(self, query: str, kind: str | None, limit: int) -> list[MemoryRecord]:
@@ -224,16 +225,18 @@ class MemoryStore:
         )
         return [self._row_to_record(row) for row in rows]
 
-    def _search_semantic(self, query: str, limit: int) -> list[MemoryRecord]:
+    def _search_semantic(
+        self, query: str, limit: int, *, kind: str | None = None
+    ) -> list[MemoryRecord]:
         """Busca semântica via vetores; retorna [] se o store vetorial estiver indisponível."""
         try:
             vector_results = self._vector_store.search(query, limit=limit)
         except Exception:  # noqa: BLE001 - vetor é opcional, busca semântica é best-effort
             return []
-        records = []
+        records: list[MemoryRecord] = []
         for vr in vector_results:
             rec = self.get(vr.memory_id)
-            if rec:
+            if rec and (kind is None or rec.kind == kind):
                 records.append(rec)
         return records
 

@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from nexus_core.memory.records import MemoryStore
 from nexus_core.memory.store import Database
@@ -38,6 +40,24 @@ class MemoryStoreTest(unittest.TestCase):
         results = self.memory.search("SQLite local")
         self.assertEqual([item.memory_id for item in results], [matching.memory_id])
         self.assertEqual(self.memory.search("SQLite", kind="semantic"), [])
+
+    def test_hybrid_search_filters_semantic_results_by_kind(self) -> None:
+        episodic = self.memory.create(
+            kind="episodic", content="Deploy release notes for the service."
+        )
+        semantic = self.memory.create(
+            kind="semantic", content="Deploy release notes for the service."
+        )
+        fake_vectors = MagicMock()
+        fake_vectors.search.return_value = [
+            SimpleNamespace(memory_id=episodic.memory_id),
+            SimpleNamespace(memory_id=semantic.memory_id),
+        ]
+        self.memory._vector_store = fake_vectors
+
+        results = self.memory.search("deploy", kind="semantic", hybrid=True)
+
+        self.assertEqual([item.memory_id for item in results], [semantic.memory_id])
 
     def test_delete_removes_record_from_search_index(self) -> None:
         record = self.memory.create(kind="semantic", content="Use an emerald accent color.")
