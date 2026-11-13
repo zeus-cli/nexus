@@ -228,6 +228,36 @@ def test_event_scheduler_cancel():
     assert sched.cancel(eid) is False  # já cancelado
 
 
+def test_event_scheduler_pop_due_clears_index():
+    """Evento executado não pode continuar cancelável/consultável na fila."""
+    sched = EventScheduler()
+    eid = sched.schedule(
+        world_id="w-1",
+        timestamp=10.0,
+        event_type=EventType.STATE_CHANGE,
+    )
+
+    due = sched.pop_due(current_time=10.0)
+    assert len(due) == 1
+    assert sched.cancel(eid) is False
+    assert sched.get_event(eid) is None
+
+
+def test_event_scheduler_same_time_and_priority_is_fifo():
+    """Empates de timestamp/prioridade preservam a ordem de agendamento."""
+    sched = EventScheduler()
+    for index in range(5):
+        sched.schedule(
+            world_id="w-1",
+            timestamp=10.0,
+            event_type=EventType.STATE_CHANGE,
+            payload={"index": index},
+        )
+
+    due = sched.pop_due(current_time=10.0)
+    assert [item.event.payload["index"] for item in due] == [0, 1, 2, 3, 4]
+
+
 # --------------------------------------------------------------------------- #
 # World Builder and World Registry
 # --------------------------------------------------------------------------- #

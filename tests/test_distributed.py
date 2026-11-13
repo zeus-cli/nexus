@@ -277,6 +277,65 @@ async def test_scheduler_complete_and_fail():
     assert task.result == {"ok": True}
 
 
+@pytest.mark.asyncio
+async def test_scheduler_failed_task_is_rescheduled_and_assignable():
+    mgr = NodeManager()
+    mgr.register_node(hostname="n1", address="a1", role=NodeRole.WORKER)
+    res = NodeResources(
+        cpu_cores=2, cpu_percent=10.0, ram_total_mb=4096.0,
+        ram_available_mb=3000.0, ram_percent=25.0, gpu_available=False,
+        gpu_memory_mb=None, disk_free_mb=50000.0, disk_total_mb=200000.0,
+        network_mbps=None, updated_at=time.time(),
+    )
+    mgr.heartbeat(mgr.list_nodes()[0].node_id, resources=res)
+    monitor = DistributedResourceMonitor(mgr)
+    sched = DistributedTaskScheduler(mgr, monitor)
+
+    tid = sched.submit_task(description="t", input={}, max_attempts=5)
+    assert await sched.schedule_next() == tid
+    await sched.mark_started(tid)
+
+    assert await sched.fail_task(tid, "boom") is True
+    failed = sched.get_task(tid)
+    assert failed.status == ScheduledTaskStatus.RESCHEDULED
+    assert failed.attempts == 1
+    assert tid in {task.task_id for task in sched.list_pending()}
+
+    assert await sched.schedule_next() == tid
+    assert sched.get_task(tid).status == ScheduledTaskStatus.ASSIGNED
+
+
+@pytest.mark.asyncio
+async def test_scheduler_node_unreachable_preserves_attempts():
+    mgr = NodeManager()
+    mgr.register_node(hostname="n1", address="a1", role=NodeRole.WORKER)
+    res = NodeResources(
+        cpu_cores=2, cpu_percent=10.0, ram_total_mb=4096.0,
+        ram_available_mb=3000.0, ram_percent=25.0, gpu_available=False,
+        gpu_memory_mb=None, disk_free_mb=50000.0, disk_total_mb=200000.0,
+        network_mbps=None, updated_at=time.time(),
+    )
+    node_id = mgr.list_nodes()[0].node_id
+    mgr.heartbeat(node_id, resources=res)
+    monitor = DistributedResourceMonitor(mgr)
+    sched = DistributedTaskScheduler(mgr, monitor)
+
+    tid = sched.submit_task(description="t", input={}, max_attempts=5)
+    assert await sched.schedule_next() == tid
+    await sched.mark_started(tid)
+    assert await sched.fail_task(tid, "boom") is True
+
+    assert await sched.schedule_next() == tid
+    await sched.mark_started(tid)
+    requeued = sched.handle_node_unreachable(node_id)
+
+    assert requeued == [tid]
+    task = sched.get_task(tid)
+    assert task.status == ScheduledTaskStatus.PENDING
+    assert task.assigned_node_id is None
+    assert task.attempts == 2
+
+
 def test_scheduler_node_unreachable_requeue():
     mgr = NodeManager()
     mgr.register_node(hostname="n1", address="a1", role=NodeRole.WORKER)
@@ -296,6 +355,7 @@ def test_scheduler_node_unreachable_requeue():
     task = sched.get_task(requeued[0])
     assert task.status == ScheduledTaskStatus.PENDING
     assert task.assigned_node_id is None
+    assert task.attempts == 1
 
 
 # --------------------------------------------------------------------------- #

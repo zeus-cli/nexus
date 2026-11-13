@@ -207,6 +207,25 @@ def test_planner_complete_and_cancel():
     assert cancelled.status == PlanStatus.CANCELLED
 
 
+def test_planner_retry_does_not_consume_attempt():
+    engine = PlannerEngine()
+    plan = engine.generate_plan("task", intent_capabilities=())
+    engine.start_plan(plan.plan_id)
+    step_id = plan.steps[0].step_id
+
+    engine.complete_step(
+        plan.plan_id, step_id, error="boom", status=PlanStepStatus.FAILED
+    )
+    failed = engine.get_plan(plan.plan_id).step_by_id(step_id)
+    assert failed.attempts == 1
+
+    assert engine.retry_step(plan.plan_id, step_id) is True
+    retried = engine.get_plan(plan.plan_id).step_by_id(step_id)
+    assert retried.status == PlanStepStatus.PENDING
+    assert retried.attempts == 1
+    assert retried.completed_at is None
+
+
 # --------------------------------------------------------------------------- #
 # Knowledge Engine
 # --------------------------------------------------------------------------- #

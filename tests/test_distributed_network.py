@@ -12,6 +12,7 @@ import pytest
 import websockets
 
 from nexus_core.distributed_network import (
+    ConnectionError as NetworkConnectionError,
     DistributedNetwork,
     DistributedNetworkClient,
     DistributedNetworkServer,
@@ -143,6 +144,50 @@ async def test_client_connect_and_broadcast():
 
     await client.stop()
     await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_client_connect_cleans_up_when_hello_fails(monkeypatch):
+    class RejectingWebSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def send(self, payload: str) -> None:
+            raise OSError("send failed")
+
+        async def close(self) -> None:
+            self.closed = True
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+
+    sockets: list[RejectingWebSocket] = []
+
+    async def fake_connect(address: str) -> RejectingWebSocket:
+        ws = RejectingWebSocket()
+        sockets.append(ws)
+        return ws
+
+    monkeypatch.setattr(
+        "nexus_core.distributed_network.websockets.connect", fake_connect
+    )
+    client = DistributedNetworkClient(node_id="client-1")
+
+    with pytest.raises(NetworkConnectionError):
+        await client.connect("ws://127.0.0.1:1")
+
+    assert client.connected_count == 0
+    assert client._tasks == {}
+    assert sockets[0].closed is True
+
+    # Uma nova tentativa deve tentar conectar de novo, não retornar cedo.
+    with pytest.raises(NetworkConnectionError):
+        await client.connect("ws://127.0.0.1:1")
+    assert len(sockets) == 2
+    await asyncio.sleep(0)
 
 
 # --------------------------------------------------------------------------- #

@@ -183,6 +183,55 @@ async def test_agent_runtime_timeout():
 
 
 @pytest.mark.asyncio
+async def test_agent_runtime_cancel_running_task():
+    reg = AgentRegistry()
+    reg.register(
+        AgentManifest(agent_id="worker", name="Worker", role=AgentRole.ENGINEER)
+    )
+    rt = AgentRuntime(reg)
+    started = asyncio.Event()
+
+    async def long_handler(task):
+        started.set()
+        await asyncio.sleep(10)
+        return {"late": True}
+
+    rt.register_handler("worker", long_handler)
+    task_id = rt.create_task(agent_id="worker", description="long", input={})
+    running = asyncio.create_task(rt.execute_task(task_id))
+    await started.wait()
+
+    assert rt.cancel_task(task_id) is True
+    result = await running
+
+    assert result.status == AgentExecutionStatus.CANCELLED
+    assert rt.get_task(task_id).status == AgentExecutionStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_timeout_is_terminal_for_cancel():
+    reg = AgentRegistry()
+    reg.register(
+        AgentManifest(agent_id="slow", name="Slow", role=AgentRole.ENGINEER)
+    )
+    rt = AgentRuntime(reg)
+
+    async def slow_handler(task):
+        await asyncio.sleep(10)
+        return {}
+
+    rt.register_handler("slow", slow_handler)
+    task_id = rt.create_task(
+        agent_id="slow", description="slow", input={}, timeout_s=0.01
+    )
+    result = await rt.execute_task(task_id)
+    assert result.status == AgentExecutionStatus.TIMEOUT
+
+    assert rt.cancel_task(task_id) is False
+    assert rt.get_task(task_id).status == AgentExecutionStatus.TIMEOUT
+
+
+@pytest.mark.asyncio
 async def test_agent_runtime_with_execution_gate_denied():
     reg = AgentRegistry()
     reg.register(
@@ -315,6 +364,59 @@ async def test_agent_orchestrator_execute_plan():
     assert result.successful == 2
     assert result.failed == 0
     assert len(result.agents_involved) == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_orchestrator_keeps_all_outputs_from_same_agent():
+    class SameAgentDispatcher:
+        async def dispatch_parallel(self, tasks):
+            return [
+                (
+                    "a1",
+                    "task-1",
+                    AgentExecutionResult(
+                        task_id="task-1",
+                        agent_id="a1",
+                        status=AgentExecutionStatus.COMPLETED,
+                        output={"message": "one"},
+                        duration_ms=1.0,
+                    ),
+                ),
+                (
+                    "a1",
+                    "task-2",
+                    AgentExecutionResult(
+                        task_id="task-2",
+                        agent_id="a1",
+                        status=AgentExecutionStatus.COMPLETED,
+                        output={"message": "two"},
+                        duration_ms=1.0,
+                    ),
+                ),
+            ]
+
+    reg = AgentRegistry()
+    reg.register(
+        AgentManifest(agent_id="a1", name="A", role=AgentRole.ANALYST)
+    )
+    orch = AgentOrchestrator(
+        reg, AgentRuntime(reg), dispatcher=SameAgentDispatcher()
+    )
+    plan = orch.create_plan(
+        objective="two tasks, one agent",
+        tasks=(
+            {"description": "one", "input": {}},
+            {"description": "two", "input": {}},
+        ),
+    )
+
+    result = await orch.execute_plan(plan.plan_id)
+
+    assert result.successful == 2
+    assert result.consolidated_output["a1"] == [
+        {"message": "one"},
+        {"message": "two"},
+    ]
 
 
 # --------------------------------------------------------------------------- #
