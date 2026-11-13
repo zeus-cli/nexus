@@ -297,9 +297,13 @@ def _fit_context(
         raise ValueError("instrução system excede o orçamento de contexto")
     prompt_bytes = prompt.encode("utf-8")
     remaining = byte_budget - len(system_bytes)
+    if remaining <= 0:
+        raise ValueError("orçamento de contexto insuficiente para o prompt")
     if len(prompt_bytes) <= remaining:
         return system_text or None, prompt, False
     trimmed = prompt_bytes[:remaining].decode("utf-8", errors="ignore").rstrip()
+    if not trimmed:
+        raise ValueError("orçamento de contexto insuficiente para o prompt")
     return system_text or None, trimmed, True
 
 

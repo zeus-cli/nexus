@@ -62,7 +62,7 @@ class ReflectionEngine:
         try:
             res = await self._gateway.complete(
                 prompt,
-                task="critique",
+                task="reasoning",
                 system=critique_system,
                 json_mode=True,
             )

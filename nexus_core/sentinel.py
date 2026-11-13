@@ -79,7 +79,17 @@ class SentinelReceiver:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
-            while line := await reader.readline():
+            while True:
+                try:
+                    line = await reader.readline()
+                except ValueError:
+                    # ``StreamReader.readline`` sinaliza limite excedido com
+                    # ValueError; responda antes de fechar para o cliente
+                    # distinguir rejeição de queda de conexão.
+                    await self._reply(writer, {"ok": False, "error": "frame too large"})
+                    return
+                if not line:
+                    break
                 if len(line) > MAX_FRAME_BYTES:
                     await self._reply(writer, {"ok": False, "error": "frame too large"})
                     return

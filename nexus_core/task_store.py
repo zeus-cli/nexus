@@ -48,7 +48,10 @@ class _TaskCrypto:
 
     def decrypt(self, data: str) -> str:
         if self._fernet is not None:
-            return self._fernet.decrypt(data.encode()).decode()
+            try:
+                return self._fernet.decrypt(data.encode()).decode()
+            except Exception as exc:  # noqa: BLE001 - falha de cripto vira estado inválido
+                raise ValueError("falha ao decifrar estado da tarefa") from exc
         if self._key is not None:
             return self._xor(data, decrypt=True)
         return data

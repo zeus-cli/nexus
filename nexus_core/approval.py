@@ -268,6 +268,9 @@ class ApprovalManager:
             return count
 
     def list_pending(self) -> list[dict[str, Any]]:
+        # A listagem é a fonte do HUD/CLI: não pode anunciar como pendente uma
+        # solicitação que ``decide`` já rejeitaria por expiração.
+        self.expire_stale()
         with connect_db(self._db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM approvals WHERE status = ?", (ApprovalStatus.PENDING.value,)).fetchall()
