@@ -83,6 +83,27 @@ def make_completion(text, task="reasoning"):
     )
 
 @pytest.mark.asyncio
+async def test_reflection_uses_task_accepted_by_gateway():
+    """O gateway real rejeita tarefas fora de LLM_TASKS; a crítica deve usar uma válida."""
+    from nexus_core.config import LLM_TASKS
+
+    class StrictGateway:
+        def __init__(self):
+            self.tasks = []
+
+        async def complete(self, prompt, *, task="reasoning", system=None, json_mode=False):
+            assert task in LLM_TASKS, f"tarefa inválida: {task!r}"
+            self.tasks.append(task)
+            return make_completion('{"decision": "SUCCESS", "justification": "ok", "suggested_action": null}')
+
+    gateway = StrictGateway()
+    result = await ReflectionEngine(gateway).critique("goal", [], [])
+
+    assert result.decision is ReflectionDecision.SUCCESS
+    assert gateway.tasks == ["reasoning"]
+
+
+@pytest.mark.asyncio
 async def test_execution_success(setup_core):
     core, gateway, _, _, _ = setup_core
     

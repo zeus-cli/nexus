@@ -95,6 +95,17 @@ def test_expire_stale_marks_pending_requests(manager):
         assert row[0] == ApprovalStatus.EXPIRED.value
 
 
+def test_list_pending_excludes_expired_requests(manager):
+    rid = manager.request_approval(create_req(), ttl_s=0.01)
+    time.sleep(0.02)
+
+    assert manager.list_pending() == []
+
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT status FROM approvals WHERE id = ?", (rid,)).fetchone()
+        assert row[0] == ApprovalStatus.EXPIRED.value
+
+
 @pytest.mark.asyncio
 async def test_revocation(manager):
     req = create_req()

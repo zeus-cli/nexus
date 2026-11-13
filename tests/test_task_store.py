@@ -33,4 +33,20 @@ def test_checksum_failure_discards_corrupted_task(tmp_path):
     assert not path.exists()
 
 
+def test_crypto_backend_failure_is_treated_as_corruption(tmp_path):
+    """Falha do backend de criptografia não pode escapar de ``load_task``."""
+    store = TaskStore(tmp_path / "tasks", encryption_key="segredo")
+    store.save_task("task4", {"state": "waiting"})
+
+    class BrokenFernet:
+        def decrypt(self, token: bytes) -> bytes:
+            raise RuntimeError("backend de criptografia indisponível")
+
+    store._crypto._fernet = BrokenFernet()
+    path = tmp_path / "tasks" / "task4.json"
+
+    assert store.load_task("task4") is None
+    assert not path.exists()
+
+
 __all__: list[str] = []

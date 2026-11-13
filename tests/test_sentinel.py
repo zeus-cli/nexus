@@ -104,6 +104,22 @@ class SentinelReceiverTest(unittest.IsolatedAsyncioTestCase):
         await second.close()
         self.assertTrue(self.socket_path.is_socket())
 
+    async def test_oversized_frame_gets_error_reply_before_close(self) -> None:
+        from nexus_core.sentinel import MAX_FRAME_BYTES
+
+        await self.receiver.start()
+        ack = await self._send(
+            {
+                "source": "sentinel_rs",
+                "kind": "perception.system.sample",
+                "payload": {"blob": "x" * (MAX_FRAME_BYTES + 1024)},
+            }
+        )
+
+        self.assertFalse(ack["ok"])
+        self.assertEqual(ack["error"], "frame too large")
+        self.assertEqual(self.runtime.store.count(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

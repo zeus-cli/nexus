@@ -138,6 +138,20 @@ class GatewayTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(GatewayError):
             await gateway.complete("question", task="planning", max_tokens=128)
 
+    async def test_context_budget_never_sends_empty_prompt(self) -> None:
+        fake = FakeProvider([completion()])
+        config = LlmConfig(
+            providers=(provider("primary"),),
+            chain=(ChainLink("primary", "fake-model"),),
+            max_context_tokens=8,
+            max_retries=0,
+        )
+        gateway = LLMGateway(config, providers={"primary": fake})
+
+        with self.assertRaises(ValueError):
+            await gateway.complete("pergunta", system="abcd", max_tokens=7)
+        self.assertEqual(fake.calls, [])
+
     async def test_models_reports_discovery_and_disabled_providers(self) -> None:
         fake = FakeProvider([])
         disabled = ProviderConfig(
