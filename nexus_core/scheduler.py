@@ -91,22 +91,22 @@ class Scheduler:
         heapq.heappush(self._heap, task)
         self._index[task.task_id] = task
 
+    def _remove_from_heap(self, task_id: str) -> None:
+        """Remove entradas do heap por ID, mantendo-o consistente.
+
+        ``ScheduledTask`` é imutável; sem remover a entrada antiga, uma cópia
+        desabilitada no índice não impediria a execução do objeto ainda ativo
+        no heap.
+        """
+        before = len(self._heap)
+        self._heap = [task for task in self._heap if task.task_id != task_id]
+        if len(self._heap) != before:
+            heapq.heapify(self._heap)
+
     def _heap_remove(self, task_id: str) -> None:
-        task = self._index.pop(task_id, None)
-        if task is None:
+        if self._index.pop(task_id, None) is None:
             raise TaskNotFound(f"tarefa agendada não encontrada: {task_id}")
-        # Marca como desabilitada; será ignorada no pop. O heap não é
-        # rearranjado (lazy deletion) — aceitável para poucos agendamentos.
-        self._index[task_id] = task.__class__(
-            task_id=task.task_id,
-            name=task.name,
-            kind=task.kind,
-            target=task.target,
-            interval_s=task.interval_s,
-            next_run=task.next_run,
-            enabled=False,
-            metadata=task.metadata,
-        )
+        self._remove_from_heap(task_id)
 
     def schedule(
         self,
@@ -133,7 +133,7 @@ class Scheduler:
         if tid in self._index:
             raise TaskAlreadyExists(f"tarefa já agendada: {tid}")
 
-        now = time.monotonic()
+        now = time.time()
         if start_at is not None:
             first_run = start_at
         elif interval_s is not None:
@@ -162,7 +162,7 @@ class Scheduler:
         task = self._index.get(task_id)
         if task is None:
             raise TaskNotFound(f"tarefa agendada não encontrada: {task_id}")
-        self._index[task_id] = task.__class__(
+        enabled = task.__class__(
             task_id=task.task_id,
             name=task.name,
             kind=task.kind,
@@ -172,14 +172,15 @@ class Scheduler:
             enabled=True,
             metadata=task.metadata,
         )
-        # Reinsere no heap para reposicionar
-        heapq.heapify(self._heap)
+        self._index[task_id] = enabled
+        self._remove_from_heap(task_id)
+        heapq.heappush(self._heap, enabled)
 
     def disable(self, task_id: str) -> None:
         task = self._index.get(task_id)
         if task is None:
             raise TaskNotFound(f"tarefa agendada não encontrada: {task_id}")
-        self._index[task_id] = task.__class__(
+        disabled = task.__class__(
             task_id=task.task_id,
             name=task.name,
             kind=task.kind,
@@ -189,7 +190,8 @@ class Scheduler:
             enabled=False,
             metadata=task.metadata,
         )
-        heapq.heapify(self._heap)
+        self._index[task_id] = disabled
+        self._remove_from_heap(task_id)
 
     def list_tasks(self) -> list[dict[str, Any]]:
         return [t.as_dict() for t in self._index.values()]
@@ -243,14 +245,21 @@ class Scheduler:
 
     async def _loop(self) -> None:
         while self._running:
-            now = time.monotonic()
+            now = time.time()
             due: list[ScheduledTask] = []
 
-            # Coleta todas as tarefas vencidas
+            # Coleta todas as tarefas vencidas. O índice é a fonte de verdade:
+            # entradas removidas/desabilitadas não podem executar pelo heap.
             while self._heap and self._heap[0].next_run <= now:
                 task = heapq.heappop(self._heap)
-                if task.enabled:
-                    due.append(task)
+                current = self._index.get(task.task_id)
+                if (
+                    current is None
+                    or not current.enabled
+                    or current.next_run != task.next_run
+                ):
+                    continue
+                due.append(task)
 
             # Reagenda tarefas periódicas
             for task in due:

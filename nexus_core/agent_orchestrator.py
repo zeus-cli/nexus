@@ -152,11 +152,16 @@ class AgentOrchestrator:
             else:
                 failed += 1
 
-        # Consolida saída: combina outputs de tarefas bem-sucedidas.
+        # Consolida saída: combina outputs de tarefas bem-sucedidas. Um mesmo
+        # agente pode executar várias tarefas; nesse caso os outputs são
+        # agrupados em lista para não sobrescrever resultados anteriores.
         consolidated: dict[str, Any] = {"task_count": len(task_results)}
+        by_agent: dict[str, list[dict[str, Any]]] = {}
         for r in task_results:
             if r.status == AgentExecutionStatus.COMPLETED and r.output:
-                consolidated[r.agent_id] = r.output
+                by_agent.setdefault(r.agent_id, []).append(r.output)
+        for agent_id, outputs in by_agent.items():
+            consolidated[agent_id] = outputs[0] if len(outputs) == 1 else outputs
 
         duration_ms = (time.monotonic() - started) * 1000.0
 

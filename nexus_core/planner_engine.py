@@ -21,7 +21,7 @@ Suporte a cancelamento, retomada, retentativas e replanejamento.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Any, Mapping
@@ -472,9 +472,24 @@ class PlannerEngine:
             return False
         if step.attempts >= step.max_attempts:
             return False
-        return self.complete_step(
-            plan_id, step_id, status=PlanStepStatus.PENDING, result=None, error=None
+        # Reabrir a etapa não é uma nova execução: ``attempts`` só deve ser
+        # incrementado quando a etapa efetivamente terminar de novo.
+        updated_step = replace(
+            step,
+            status=PlanStepStatus.PENDING,
+            result=None,
+            error=None,
+            started_at=None,
+            completed_at=None,
         )
+        new_plan = replace(
+            plan,
+            steps=tuple(
+                updated_step if s.step_id == step_id else s for s in plan.steps
+            ),
+        )
+        self._plans[plan_id] = new_plan
+        return True
 
 
 __all__ = [

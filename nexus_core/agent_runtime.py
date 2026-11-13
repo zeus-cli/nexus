@@ -115,12 +115,36 @@ class AgentRuntime:
         self._tasks: dict[str, AgentTask] = {}
         self._results: dict[str, AgentExecutionResult] = {}
         self._handlers: dict[str, Callable[[AgentTask], Any]] = {}
+        self._running: dict[str, asyncio.Task[Any]] = {}
 
     def register_handler(
         self, agent_id: str, handler: Callable[[AgentTask], Any]
     ) -> None:
         """Registra o handler (função de execução) de um agente."""
         self._handlers[agent_id] = handler
+
+    def _is_cancelled(self, task_id: str) -> bool:
+        current = self._tasks.get(task_id)
+        return (
+            current is not None
+            and current.status == AgentExecutionStatus.CANCELLED
+        )
+
+    def _cancelled_result(
+        self, task: AgentTask, started: float, execution_id: str | None
+    ) -> AgentExecutionResult:
+        result = AgentExecutionResult(
+            task_id=task.task_id,
+            agent_id=task.agent_id,
+            status=AgentExecutionStatus.CANCELLED,
+            output={},
+            duration_ms=(time.monotonic() - started) * 1000.0,
+            error="task cancelled",
+            execution_id=execution_id,
+        )
+        self._results[task.task_id] = result
+        self._registry.set_state(task.agent_id, AgentState.IDLE)
+        return result
 
     def create_task(
         self,
@@ -226,14 +250,26 @@ class AgentRuntime:
                     f"no handler registered for agent {task.agent_id}"
                 )
 
-            if asyncio.iscoroutinefunction(handler):
+            if self._is_cancelled(task_id):
+                return self._cancelled_result(task, started, execution_id)
+
+            async def _invoke_handler() -> Any:
+                if asyncio.iscoroutinefunction(handler):
+                    return await handler(task)
+                return await asyncio.to_thread(handler, task)
+
+            running = asyncio.create_task(_invoke_handler())
+            self._running[task_id] = running
+            try:
                 output = await asyncio.wait_for(
-                    handler(task), timeout=task.timeout_s
+                    running, timeout=task.timeout_s
                 )
-            else:
-                output = await asyncio.wait_for(
-                    asyncio.to_thread(handler, task), timeout=task.timeout_s
-                )
+            finally:
+                if self._running.get(task_id) is running:
+                    self._running.pop(task_id, None)
+
+            if self._is_cancelled(task_id):
+                return self._cancelled_result(task, started, execution_id)
 
             if not isinstance(output, dict):
                 output = {"result": output}
@@ -268,7 +304,16 @@ class AgentRuntime:
             self._registry.set_state(task.agent_id, AgentState.IDLE)
             return result
 
+        except asyncio.CancelledError:
+            # Cancelamento solicitado via cancel_task(): devolve um resultado
+            # terminal em vez de deixar a conclusão sobrescrever o estado.
+            if self._is_cancelled(task_id):
+                return self._cancelled_result(task, started, execution_id)
+            raise
+
         except asyncio.TimeoutError:
+            if self._is_cancelled(task_id):
+                return self._cancelled_result(task, started, execution_id)
             duration_ms = (time.monotonic() - started) * 1000.0
             result = AgentExecutionResult(
                 task_id=task.task_id,
@@ -300,6 +345,8 @@ class AgentRuntime:
             return result
 
         except AgentNotAuthorized as exc:
+            if self._is_cancelled(task_id):
+                return self._cancelled_result(task, started, execution_id)
             duration_ms = (time.monotonic() - started) * 1000.0
             result = AgentExecutionResult(
                 task_id=task.task_id,
@@ -332,6 +379,8 @@ class AgentRuntime:
             return result
 
         except Exception as exc:  # noqa: BLE001
+            if self._is_cancelled(task_id):
+                return self._cancelled_result(task, started, execution_id)
             duration_ms = (time.monotonic() - started) * 1000.0
             result = AgentExecutionResult(
                 task_id=task.task_id,
@@ -375,6 +424,7 @@ class AgentRuntime:
             AgentExecutionStatus.COMPLETED,
             AgentExecutionStatus.FAILED,
             AgentExecutionStatus.CANCELLED,
+            AgentExecutionStatus.TIMEOUT,
         ):
             return False
         task = AgentTask(
@@ -393,6 +443,9 @@ class AgentRuntime:
             completed_at=time.monotonic(),
         )
         self._tasks[task_id] = task
+        running = self._running.get(task_id)
+        if running is not None and not running.done():
+            running.cancel()
         self._registry.set_state(task.agent_id, AgentState.IDLE)
         return True
 

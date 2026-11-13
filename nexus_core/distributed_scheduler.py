@@ -19,7 +19,7 @@ import asyncio
 import heapq
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from typing import Any, Callable, Mapping
 
@@ -154,7 +154,10 @@ class DistributedTaskScheduler:
     def list_pending(self) -> list[ScheduledTask]:
         return [
             t for t in self._tasks.values()
-            if t.status == ScheduledTaskStatus.PENDING
+            if t.status in (
+                ScheduledTaskStatus.PENDING,
+                ScheduledTaskStatus.RESCHEDULED,
+            )
         ]
 
     def list_by_node(self, node_id: str) -> list[ScheduledTask]:
@@ -163,18 +166,50 @@ class DistributedTaskScheduler:
             if t.assigned_node_id == node_id
         ]
 
+    def _reschedule(
+        self,
+        task: ScheduledTask,
+        *,
+        error: str,
+        attempts: int,
+        status: ScheduledTaskStatus = ScheduledTaskStatus.RESCHEDULED,
+    ) -> None:
+        """Devolve a tarefa à fila preservando histórico e prioridade."""
+        now = time.time()
+        updated = replace(
+            task,
+            status=status,
+            assigned_node_id=None,
+            completed_at=None,
+            result=None,
+            error=error,
+            attempts=attempts,
+            metadata=dict(
+                task.metadata, last_error=error, last_attempt_at=now
+            ),
+        )
+        self._tasks[task.task_id] = updated
+        self._counter += 1
+        heapq.heappush(
+            self._heap,
+            (-updated.priority.value, self._counter, updated.task_id),
+        )
+
     async def schedule_next(self) -> str | None:
         """Escolhe a próxima tarefa pendente e atribui a um nó adequado.
 
         Retorna o task_id atribuído ou None se não houver nó/tarefa disponível.
         """
         async with self._lock:
-            # Esvazia o heap re-inserindo apenas tarefas ainda pendentes.
+            # Esvazia o heap re-inserindo apenas tarefas ainda agendáveis.
             pending: list[tuple[float, int, str]] = []
             while self._heap:
                 neg_prio, counter, tid = heapq.heappop(self._heap)
                 task = self._tasks.get(tid)
-                if task is not None and task.status == ScheduledTaskStatus.PENDING:
+                if task is not None and task.status in (
+                    ScheduledTaskStatus.PENDING,
+                    ScheduledTaskStatus.RESCHEDULED,
+                ):
                     pending.append((neg_prio, counter, tid))
             for item in pending:
                 heapq.heappush(self._heap, item)
@@ -290,39 +325,17 @@ class DistributedTaskScheduler:
     async def fail_task(self, task_id: str, error: str) -> bool:
         """Marca uma tarefa como falhada com possibilidade de retry."""
         task = self._tasks.get(task_id)
-        if task is None:
+        if task is None or task.status not in (
+            ScheduledTaskStatus.ASSIGNED,
+            ScheduledTaskStatus.RUNNING,
+        ):
             return False
         if task.attempts >= task.max_attempts:
             # Esgotou tentativas: marca como falhada definitivamente.
             return await self.complete_task(task_id, error=error)
 
-        # Reagenda a tarefa.
-        now = time.time()
-        rescheduled = ScheduledTask(
-            task_id=task.task_id,
-            description=task.description,
-            input=task.input,
-            required_ram_mb=task.required_ram_mb,
-            require_gpu=task.require_gpu,
-            priority=task.priority,
-            preferred_role=task.preferred_role,
-            status=ScheduledTaskStatus.RESCHEDULED,
-            assigned_node_id=None,
-            created_at=task.created_at,
-            assigned_at=task.assigned_at,
-            started_at=task.started_at,
-            completed_at=None,
-            result=None,
-            error=error,
-            attempts=task.attempts + 1,
-            max_attempts=task.max_attempts,
-            metadata=dict(task.metadata, last_error=error, last_attempt_at=now),
-        )
-        self._tasks[task_id] = rescheduled
-        self._counter += 1
-        heapq.heappush(
-            self._heap, (-rescheduled.priority.value, self._counter, task_id)
-        )
+        # Reagenda a tarefa preservando o histórico de tentativas.
+        self._reschedule(task, error=error, attempts=task.attempts + 1)
         return True
 
     def cancel_task(self, task_id: str) -> bool:
@@ -363,19 +376,23 @@ class DistributedTaskScheduler:
                 ScheduledTaskStatus.ASSIGNED,
                 ScheduledTaskStatus.RUNNING,
             ):
-                self.cancel_task(task.task_id)
-                # Re-submete com mesma prioridade e tentativas restantes.
-                self.submit_task(
-                    description=task.description,
-                    input=task.input,
-                    required_ram_mb=task.required_ram_mb,
-                    require_gpu=task.require_gpu,
-                    priority=task.priority,
-                    preferred_role=task.preferred_role,
-                    task_id=task.task_id,
-                    max_attempts=task.max_attempts,
+                error = f"node unreachable: {node_id}"
+                if task.attempts >= task.max_attempts:
+                    # Sem tentativas restantes: falha definitiva, sem
+                    # reenfileirar para sempre.
+                    self._tasks[task.task_id] = replace(
+                        task,
+                        status=ScheduledTaskStatus.FAILED,
+                        completed_at=time.time(),
+                        error=error,
+                    )
+                    continue
+                self._reschedule(
+                    task,
+                    error=error,
+                    attempts=task.attempts + 1,
+                    status=ScheduledTaskStatus.PENDING,
                 )
-                # Ajusta status de volta para pendente (submit_task cria PENDING).
                 requeued.append(task.task_id)
         return requeued
 

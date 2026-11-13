@@ -213,10 +213,12 @@ class DistributedNetworkClient:
         async with self._lock:
             if address in self._connections:
                 return  # já conectado
+            ws = None
+            task = None
             try:
                 ws = await websockets.connect(address)
-                self._connections[address] = ws
                 task = asyncio.create_task(self._receive_loop(address, ws))
+                self._connections[address] = ws
                 self._tasks[address] = task
                 # Envia hello
                 await self._send_json(
@@ -227,8 +229,24 @@ class DistributedNetworkClient:
                         "timestamp": time.time(),
                     },
                 )
-            except Exception as exc:
-                raise ConnectionError(f"falha ao conectar a {address}: {exc}")
+            except BaseException as exc:
+                # Uma falha no handshake não pode deixar a conexão (nem a
+                # tarefa de recepção) registrada: o próximo connect retornaria
+                # cedo e o nó ficaria permanentemente "conectado" sem sê-lo.
+                if task is not None:
+                    task.cancel()
+                self._connections.pop(address, None)
+                self._tasks.pop(address, None)
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                if isinstance(exc, Exception):
+                    raise ConnectionError(
+                        f"falha ao conectar a {address}: {exc}"
+                    ) from exc
+                raise
 
     async def disconnect(self, address: str) -> None:
         async with self._lock:
@@ -316,8 +334,12 @@ class DistributedNetworkClient:
             pass
         finally:
             async with self._lock:
-                self._connections.pop(address, None)
-                self._tasks.pop(address, None)
+                # Só remove a conexão/tarefa que ainda pertence a este loop:
+                # uma reconexão pode ter criado um novo par para o endereço.
+                if self._connections.get(address) is ws:
+                    self._connections.pop(address, None)
+                if self._tasks.get(address) is asyncio.current_task():
+                    self._tasks.pop(address, None)
 
     async def _send_json(self, websocket: Any, data: Mapping[str, Any]) -> None:
         await websocket.send(json.dumps(data, separators=(",", ":")))

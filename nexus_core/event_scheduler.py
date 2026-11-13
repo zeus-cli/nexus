@@ -30,11 +30,14 @@ class ScheduledEvent:
     event: SimulationEvent
     handler: Callable[[SimulationEvent], Any] | None = None
     cancelled: bool = False
+    sequence: int = 0
 
     def __lt__(self, other: "ScheduledEvent") -> bool:
         if self.timestamp != other.timestamp:
             return self.timestamp < other.timestamp
-        return self.priority < other.priority
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.sequence < other.sequence
 
 
 class EventScheduler:
@@ -75,10 +78,11 @@ class EventScheduler:
             priority=priority,
             event=event,
             handler=handler,
+            sequence=self._counter,
         )
+        self._counter += 1
         heapq.heappush(self._heap, scheduled)
         self._event_index[event_id] = scheduled
-        self._counter += 1
         return event_id
 
     def cancel(self, event_id: str) -> bool:
@@ -94,6 +98,9 @@ class EventScheduler:
         due: list[ScheduledEvent] = []
         while self._heap and self._heap[0].timestamp <= current_time:
             scheduled = heapq.heappop(self._heap)
+            # O evento saiu da fila: não pode mais ser cancelado nem
+            # consultado como "agendado", e o índice não deve crescer sem fim.
+            self._event_index.pop(scheduled.event.event_id, None)
             if not scheduled.cancelled:
                 due.append(scheduled)
         return due
