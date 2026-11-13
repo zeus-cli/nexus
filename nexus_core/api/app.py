@@ -673,10 +673,8 @@ def create_app(
         if registry is None:
             raise HTTPException(status_code=404, detail="world registry not available")
         try:
-            builder = WorldBuilder(
-                world_id=body.get("world_id"),
-                name=body.get("name", "Untitled World"),
-            )
+            builder = WorldBuilder(world_id=body.get("world_id"))
+            builder.name(body.get("name", "Untitled World"))
             paradigm = body.get("paradigm", "agent_based")
             try:
                 builder.paradigm(SimulationParadigm[paradigm.upper()])
