@@ -406,7 +406,14 @@ class ExecutionGate:
         Fase 3: componentes confiáveis são preregistrados. Fase 4+ pode
         integrar com Identity Manager completo (mTLS, chaves, etc.).
         """
-        trusted = {"nexus-daemon", "python-runtime", "cli", "tui", "web-hud"}
+        trusted = {
+            "nexus-daemon",
+            "python-runtime",
+            "cli",
+            "tui",
+            "web-hud",
+            "automation_engine",
+        }
         return component_id in trusted or component_id.startswith("agent-")
 
     async def _validate_capability(

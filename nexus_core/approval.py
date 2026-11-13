@@ -144,7 +144,20 @@ class ApprovalManager:
 
     def decide(self, request_id: str, decision: ApprovalDecision) -> None:
         status = ApprovalStatus.APPROVED.value if decision.decision == "APPROVED" else ApprovalStatus.DENIED.value
+        now = time.time()
         with connect_db(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT status, expires_at FROM approvals WHERE id = ?", (request_id,)
+            ).fetchone()
+            if row is None or row[0] != ApprovalStatus.PENDING.value:
+                raise ValueError(f"Request {request_id} not found or not in PENDING state")
+            if now >= row[1]:
+                conn.execute(
+                    "UPDATE approvals SET status = ? WHERE id = ? AND status = ?",
+                    (ApprovalStatus.EXPIRED.value, request_id, ApprovalStatus.PENDING.value),
+                )
+                conn.commit()
+                raise ValueError(f"Request {request_id} expired")
             res = conn.execute(
                 "UPDATE approvals SET status = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = ?",
                 (status, decision.timestamp, decision.approver, request_id, ApprovalStatus.PENDING.value)

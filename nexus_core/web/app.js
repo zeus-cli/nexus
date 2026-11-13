@@ -20,6 +20,18 @@
     securityNotice.timer = window.setTimeout(() => { node.className = "notice"; }, 5500);
   }
 
+  function describeError(data, status) {
+    const detail = data && data.detail;
+    if (typeof detail === "string" && detail) return detail;
+    if (detail && typeof detail === "object") {
+      const parts = [detail.message || detail.error || `HTTP ${status}`];
+      if (detail.justification) parts.push(detail.justification);
+      if (detail.request_id) parts.push(`solicitação ${detail.request_id}`);
+      return parts.filter(Boolean).join(" · ");
+    }
+    return `HTTP ${status}`;
+  }
+
   async function api(path, options = {}) {
     if (!state.token) throw new Error("Informe o token local para continuar.");
     const response = await fetch(path, {
@@ -31,7 +43,7 @@
       },
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(describeError(data, response.status));
     return data;
   }
 
@@ -113,7 +125,7 @@
   async function refreshModels() {
     const data = await api("/api/v1/models");
     const routes = data.routes || [];
-    const enabled = new Set(data.providers.filter((provider) => provider.enabled && provider.authorized).map((provider) => provider.name));
+    const enabled = new Set(data.providers.filter((provider) => provider.enabled).map((provider) => provider.name));
     const selectModel = $("task-model");
     const selectedRoute = selectModel.value;
     selectModel.replaceChildren(new Option("Automático, conforme a cadeia configurada", ""));
@@ -166,7 +178,7 @@
       const card = document.createElement("article");
       card.className = "model-card";
       const heading = document.createElement("header");
-      heading.append(textNode("strong", action.action_id), textNode("span", action.allowed ? "permitido" : `exige autonomia ${action.required_autonomy}`, "badge"));
+      heading.append(textNode("strong", action.id), textNode("span", action.allowed ? "permitido" : `exige autonomia ${action.required_autonomy}`, "badge"));
       card.append(heading, textNode("p", action.description));
       const button = textNode("button", "Executar diagnóstico");
       button.className = "button quiet";
@@ -175,7 +187,7 @@
       button.addEventListener("click", async () => {
         $("automation-state").textContent = "executando";
         try {
-          const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.action_id)}`, { method: "POST" });
+          const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}`, { method: "POST" });
           $("automation-result").textContent = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}\n\ncódigo ${result.exit_code} · ${result.duration_ms} ms`;
           $("automation-state").textContent = "concluído";
         } catch (error) {
@@ -434,12 +446,13 @@
         system: $("task-system").value || null,
         ...selection,
       }) });
-      $("task-result").textContent = result.completion.text;
+      const completion = result.final_completion;
+      $("task-result").textContent = completion.text;
       $("task-state").textContent = "concluída";
       $("task-state").className = "badge done";
-      $("task-meta").textContent = `${result.completion.provider}/${result.completion.model} · ${result.completion.latency_ms} ms · ${result.completion.prompt_tokens ?? "?"}/${result.completion.completion_tokens ?? "?"} tokens · custo ${result.completion.estimated_cost_usd ?? "não configurado"}`;
+      $("task-meta").textContent = `${completion.provider}/${completion.model} · ${completion.latency_ms} ms · ${completion.prompt_tokens ?? "?"}/${completion.completion_tokens ?? "?"} tokens · custo ${completion.estimated_cost_usd ?? "não configurado"}`;
       if ("Notification" in window && Notification.permission === "granted") {
-        new Notification("NEXUS · tarefa concluída", { body: `${result.completion.provider}/${result.completion.model}` });
+        new Notification("NEXUS · tarefa concluída", { body: `${completion.provider}/${completion.model}` });
       }
       await refreshOverview();
       await refreshTaskHistory();

@@ -270,6 +270,7 @@ async def serve(
         while iterations is None or count < iterations:
             purged = runtime.store.apply_retention()
             purged_memories = runtime.memory.purge_expired()
+            expired_approvals = runtime.approvals.expire_stale()
             await runtime.recorder.record(
                 Event(
                     kind="system.heartbeat",
@@ -279,6 +280,7 @@ async def serve(
                         "events": runtime.store.count(),
                         "purged": purged,
                         "purged_memories": purged_memories,
+                        "expired_approvals": expired_approvals,
                     },
                 )
             )

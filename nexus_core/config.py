@@ -249,8 +249,15 @@ def config_from_mapping(raw: Mapping[str, Any], *, source: Path | None = None,
     nexus_section = _section(raw, "nexus", ("name", "environment"))
     environment = _as_str(nexus_section.get("environment", "production"), "nexus.environment")
 
-    project_root = (source.parent.parent if source and source.parent.name == "config"
-                    else find_project_root(source.parent if source else None))
+    if source is not None:
+        # Um arquivo explícito fora de ``config/`` deve resolver caminhos
+        # relativos ao seu próprio diretório; exigir a descoberta do projeto
+        # impediria configurações como ``NEXUS_CONFIG=/etc/nexus.toml``.
+        project_root = (
+            source.parent.parent if source.parent.name == "config" else source.parent
+        )
+    else:
+        project_root = find_project_root()
     project_root = project_root.resolve()
 
     paths_section = _section(raw, "paths", ("data_dir", "database", "log_file"))

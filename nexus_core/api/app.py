@@ -379,7 +379,10 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        stored = await runtime.recorder.record(event)
+        try:
+            stored = await runtime.recorder.record(event)
+        except ValueError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
         return stored.to_dict()
 
     @app.get(f"{API_PREFIX}/memories", dependencies=[read])

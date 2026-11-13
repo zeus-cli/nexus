@@ -185,6 +185,10 @@ class MemoryStore:
         limit: int = 10,
         hybrid: bool = False,
     ) -> list[MemoryRecord]:
+        if kind is not None and kind not in MEMORY_KINDS:
+            raise ValueError(f"kind de memória inválido: {kind!r}")
+        if limit <= 0:
+            raise ValueError("limit deve ser positivo")
         if not hybrid:
             return self._search_lexical(query, kind, limit)
 

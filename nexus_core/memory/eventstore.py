@@ -274,6 +274,10 @@ class EventStore:
                 event_id=row["event_id"],
                 correlation_id=row["correlation_id"],
                 created_at=parse_timestamp(row["created_at"], "created_at"),
+                # ``dedup_key`` é NULL quando o evento foi gravado com
+                # ``dedup=False``; restaurar a flag evita que eventos de ciclo
+                # de vida voltem a ser deduplicáveis depois de uma leitura.
+                dedup=row["dedup_key"] is not None,
             )
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             raise CorruptEventError(
