@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -351,6 +352,26 @@ def test_experiment_runner():
     comp = runner.compare_scenarios(exp.experiment_id)
     assert comp["s1"]["runs"] == 2
     assert comp["s1"]["completed"] == 2
+
+
+def test_experiment_runner_records_wall_clock_timestamps():
+    runner = ExperimentRunner()
+
+    def fake_run(params):
+        return SimulationResult(
+            world_id="w-1",
+            status=WorldStatus.COMPLETED,
+            label="simulated",
+        )
+
+    runner.set_run_simulation(fake_run)
+    exp = runner.create_experiment(name="clock", scenario_ids=("s1",), repetitions=1)
+    before = time.time()
+    result = asyncio.run(runner.run_experiment(exp.experiment_id))[0]
+    after = time.time()
+
+    assert before <= result.started_at <= result.completed_at <= after
+    assert result.duration_s == pytest.approx(result.completed_at - result.started_at)
 
 
 # --------------------------------------------------------------------------- #
