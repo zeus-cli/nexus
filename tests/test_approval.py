@@ -72,6 +72,29 @@ async def test_expiration(manager):
         row = conn.execute("SELECT status FROM approvals WHERE id = ?", (rid,)).fetchone()
         assert row[0] == ApprovalStatus.EXPIRED.value
 
+def test_decide_rejects_expired_request(manager):
+    rid = manager.request_approval(create_req(), ttl_s=0.01)
+    time.sleep(0.02)
+
+    with pytest.raises(ValueError, match="expired"):
+        manager.decide(rid, ApprovalDecision("APPROVED", "human-1"))
+
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT status FROM approvals WHERE id = ?", (rid,)).fetchone()
+        assert row[0] == ApprovalStatus.EXPIRED.value
+
+
+def test_expire_stale_marks_pending_requests(manager):
+    rid = manager.request_approval(create_req(), ttl_s=0.01)
+    time.sleep(0.02)
+
+    assert manager.expire_stale() == 1
+
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute("SELECT status FROM approvals WHERE id = ?", (rid,)).fetchone()
+        assert row[0] == ApprovalStatus.EXPIRED.value
+
+
 @pytest.mark.asyncio
 async def test_revocation(manager):
     req = create_req()

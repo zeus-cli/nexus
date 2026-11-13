@@ -127,6 +127,29 @@ class AppendQueryTest(StoreTestCase):
             self.assertTrue(inserted)
         self.assertEqual(self.store.count(), 3)
 
+    def test_roundtrip_preserves_dedup_opt_out(self) -> None:
+        event = Event(
+            kind="system.api.stopped",
+            source="api",
+            payload={"sessions_closed": 0},
+            dedup=False,
+        )
+        self.assertTrue(self.store.append(event)[1])
+
+        loaded = self.store.get(event.event_id)
+        assert loaded is not None
+        self.assertFalse(loaded.dedup)
+        self.assertIsNone(loaded.to_dict()["dedup_key"])
+
+    def test_roundtrip_preserves_deduplicable_events(self) -> None:
+        event = Event(kind="system.heartbeat", source="app", payload={"uptime_s": 1})
+        self.assertTrue(self.store.append(event)[1])
+
+        loaded = self.store.get(event.event_id)
+        assert loaded is not None
+        self.assertTrue(loaded.dedup)
+        self.assertEqual(loaded.to_dict()["dedup_key"], event.dedup_key())
+
     def test_filters_and_ordering(self) -> None:
         base = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
         for index in range(5):

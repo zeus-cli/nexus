@@ -79,6 +79,16 @@ class AuthenticationTest(ApiTestCase):
         self.assertEqual(asset.status_code, 200)
         self.assertIn("sessionStorage", asset.text)
 
+    def test_dashboard_javascript_matches_api_contracts(self) -> None:
+        asset = self.client.get("/assets/app.js")
+        self.assertEqual(asset.status_code, 200)
+        source = asset.text
+        self.assertIn("result.final_completion", source)
+        self.assertNotIn("result.completion", source)
+        self.assertIn("action.id", source)
+        self.assertNotIn("action.action_id", source)
+        self.assertNotIn("provider.enabled && provider.authorized", source)
+
     def test_health_is_open(self) -> None:
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
@@ -205,7 +215,7 @@ class EventsApiTest(ApiTestCase):
     def test_task_route_uses_cognitive_core(self) -> None:
         class StubTaskResult:
             def as_dict(self):
-                return {"task_id": "task-1", "completion": {"text": "result"}}
+                return {"task_id": "task-1", "final_completion": {"text": "result"}}
 
         class StubCore:
             async def run(self, prompt: str, **kwargs):
@@ -221,6 +231,7 @@ class EventsApiTest(ApiTestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["task_id"], "task-1")
+        self.assertEqual(response.json()["final_completion"]["text"], "result")
         self.assertEqual(self.runtime.cognitive.kwargs["provider_name"], "local")
         self.assertEqual(self.runtime.cognitive.kwargs["model_name"], "small")
 
@@ -293,6 +304,19 @@ class EventsApiTest(ApiTestCase):
             json={"kind": "agent.task", "severity": "urgente"},
         )
         self.assertEqual(bad_severity.status_code, 422)
+
+    def test_oversized_event_payload_is_rejected_with_413(self) -> None:
+        response = self.client.post(
+            "/api/v1/events",
+            headers=self.headers,
+            json={
+                "kind": "test.oversized",
+                "source": "test",
+                "payload": {"blob": "x" * 70_000},
+            },
+        )
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("excede o limite", response.json()["detail"])
 
     def test_invalid_queries_are_rejected(self) -> None:
         self.assertEqual(

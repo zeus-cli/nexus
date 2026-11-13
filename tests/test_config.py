@@ -73,6 +73,14 @@ class OverrideTest(unittest.TestCase):
                 config = load_config(path)
         self.assertEqual(config.logging.level, "DEBUG")
 
+    def test_explicit_config_outside_config_dir_uses_its_own_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "nexus.toml"
+            path.write_text("[paths]\ndata_dir = 'data'\n", encoding="utf-8")
+            config = load_config(path)
+        self.assertEqual(config.paths.data_dir, root.resolve() / "data")
+
 
 class ValidationTest(unittest.TestCase):
     def assert_invalid(self, body: str, fragment: str) -> None:

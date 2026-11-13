@@ -168,11 +168,14 @@ async def test_approval_expiration(tmp_path):
         policy_version="1.0",
         justification="test",
     )
-    rid = am.request_approval(req, ttl_s=0.001)
+    rid = am.request_approval(req)
     am.decide(rid, ApprovalDecision(decision="APPROVED", approver="admin"))
 
-    # Aguarda expiração.
-    time.sleep(0.02)
+    # Simula a passagem do tempo sem depender do relógio do sistema.
+    with sqlite3.connect(tmp_path / "approvals.db") as conn:
+        conn.execute(
+            "UPDATE approvals SET expires_at = ? WHERE id = ?", (time.time() - 1, rid)
+        )
 
     # claim_approval deve falhar porque expirou.
     assert am.claim_approval(rid) is False

@@ -59,6 +59,12 @@ class MemoryStoreTest(unittest.TestCase):
 
         self.assertEqual([item.memory_id for item in results], [semantic.memory_id])
 
+    def test_search_rejects_invalid_kind_and_non_positive_limit(self) -> None:
+        with self.assertRaises(ValueError):
+            self.memory.search("anything", kind="bogus")
+        with self.assertRaises(ValueError):
+            self.memory.search("anything", limit=0)
+
     def test_delete_removes_record_from_search_index(self) -> None:
         record = self.memory.create(kind="semantic", content="Use an emerald accent color.")
         self.assertTrue(self.memory.delete(record.memory_id))

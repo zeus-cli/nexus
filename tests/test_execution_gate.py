@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock
 from nexus_core.automation import AutomationEngine, Tool, RiskLevel, AccessLevel, ExecutionMode, ApprovalRequired, AutomationDenied
 from nexus_core.approval import ApprovalManager, ApprovalRequest, ApprovalDecision
+from nexus_core.execution_gate import ExecutionGate
 from nexus_core.policy import PolicyEngine, PolicyDecision as PolicyDec
 from nexus_core.recorder import EventRecorder
 
@@ -23,6 +24,16 @@ def engine(mock_recorder, tmp_path):
 @pytest.mark.asyncio
 async def test_policy_allow_low_risk(engine):
     result = await engine.run("sys.uptime")
+    assert result.exit_code == 0
+
+@pytest.mark.asyncio
+async def test_automation_engine_identity_is_trusted_by_execution_gate(engine, tmp_path):
+    engine._execution_gate = ExecutionGate(
+        approval_manager=ApprovalManager(db_path=str(tmp_path / "gate-approvals.db"))
+    )
+
+    result = await engine.run("sys.uptime")
+
     assert result.exit_code == 0
 
 @pytest.mark.asyncio
