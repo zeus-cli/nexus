@@ -230,7 +230,7 @@ class ExperimentRunner:
                     )
                     seed_offset += 1
 
-                started = time.monotonic()
+                started = time.time()
                 try:
                     result = self._run_simulation(params)
                 except Exception as exc:  # noqa: BLE001
@@ -242,6 +242,7 @@ class ExperimentRunner:
                         label="simulated",
                         metadata={"error": str(exc)[:512]},
                     )
+                completed = time.time()
 
                 result = SimulationResult(
                     world_id=result.world_id,
@@ -251,8 +252,8 @@ class ExperimentRunner:
                     events=result.events,
                     metrics=result.metrics,
                     started_at=started,
-                    completed_at=time.monotonic(),
-                    duration_s=time.monotonic() - started,
+                    completed_at=completed,
+                    duration_s=completed - started,
                     label=result.label,
                     metadata=dict(result.metadata, scenario_id=scenario_id, repetition=rep),
                 )
