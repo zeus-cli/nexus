@@ -509,6 +509,31 @@ def test_collaboration_conflict_detection():
     assert consolidated["conflicts"][0]["key"] == "status"
 
 
+def test_collaboration_consolidate_handles_nested_unhashable_values():
+    """Valores dict/list não devem quebrar a detecção de conflitos."""
+    collab = CollaborationEngine()
+    collab.add_contribution(
+        task_id="task-1",
+        agent_id="agent-1",
+        content={"plan": {"steps": [1, 2]}},
+        confidence=0.8,
+    )
+    consolidated = collab.consolidate("task-1")
+    assert consolidated["conflicts"] == []
+    assert consolidated["consensus"] == {"plan": {"steps": [1, 2]}}
+
+    collab.add_contribution(
+        task_id="task-1",
+        agent_id="agent-2",
+        content={"plan": {"steps": [3]}},
+        confidence=0.9,
+    )
+    consolidated = collab.consolidate("task-1")
+    assert len(consolidated["conflicts"]) == 1
+    assert consolidated["conflicts"][0]["key"] == "plan"
+    assert consolidated["consensus"] is None
+
+
 # --------------------------------------------------------------------------- #
 # Adversarial Review
 # --------------------------------------------------------------------------- #
