@@ -251,6 +251,19 @@ class ExecutionGate:
                 justification=justification or reason,
             )
             rid = self._approval_manager.request_approval(req)
+            # A execução precisa sobreviver à decisão humana para que o
+            # chamador possa retomá-la com ``execute(request_id)``.
+            self._executions[request_id] = {
+                "component_id": component_id,
+                "tool_id": tool_id,
+                "params": dict(params),
+                "task_id": task_id,
+                "plan_id": plan_id,
+                "status": "pending_approval",
+                "approval_id": rid,
+                "created_at": time.monotonic(),
+                "risk_level": policy_risk,
+            }
             await self._audit(
                 "security.execution.approval_requested",
                 {
@@ -324,23 +337,21 @@ class ExecutionGate:
         execution = self._executions.get(request_id)
         if execution is None:
             raise ExecutionGateError(f"execution not found or not authorized: {request_id}")
-        if execution["status"] != "authorized":
-            raise ExecutionGateError(
-                f"execution {request_id} not in authorized state: {execution['status']}"
-            )
-
-        tool_id = execution["tool_id"]
-        params = execution["params"]
-
-        # Aprovação HITL: se houver approval_id associado, claim + mark_starting.
+        status = execution["status"]
         approval_id = execution.get("approval_id")
-        if approval_id:
-            claimed = self._approval_manager.claim_approval(approval_id)
-            if not claimed:
+        if status == "pending_approval":
+            if not approval_id or not self._approval_manager.claim_approval(approval_id):
                 raise ExecutionGateError(
                     f"approval {approval_id} not available, expired or already consumed"
                 )
             self._approval_manager.mark_starting(approval_id)
+        elif status != "authorized":
+            raise ExecutionGateError(
+                f"execution {request_id} not in authorized state: {status}"
+            )
+
+        tool_id = execution["tool_id"]
+        params = execution["params"]
 
         execution["status"] = "executing"
         execution["started_at"] = time.monotonic()
