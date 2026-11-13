@@ -109,6 +109,30 @@ def test_tool_registry_validate_input():
         reg.validate_input("nonexistent", {})
 
 
+def test_tool_registry_validate_input_rejects_bool_for_integer():
+    """Booleanos não devem ser aceitos como inteiros (bool é subclasse de int)."""
+    reg = ToolRegistry()
+    spec = ToolSpec(
+        tool_id="test.count",
+        version="1.0",
+        description="Count items",
+        risk=ToolRiskLevel.LOW,
+        access=ToolAccessLevel.READ,
+        input_schema={
+            "type": "object",
+            "properties": {"count": {"type": "integer"}},
+            "required": ["count"],
+        },
+    )
+    reg.register(spec)
+
+    reg.validate_input("test.count", {"count": 0})
+    reg.validate_input("test.count", {"count": -7})
+    for value in (True, False):
+        with pytest.raises(ValueError, match="must be an integer"):
+            reg.validate_input("test.count", {"count": value})
+
+
 # --------------------------------------------------------------------------- #
 # Execution Gate
 # --------------------------------------------------------------------------- #
