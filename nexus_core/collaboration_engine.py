@@ -110,7 +110,12 @@ class CollaborationEngine:
             for k, v in c.content.items():
                 keys_seen.setdefault(k, []).append((c.agent_id, v))
         for k, entries in keys_seen.items():
-            values = {v for _, v in entries}
+            # Comparação por igualdade: ``content`` aceita valores arbitrários
+            # (dict/list), que não são hashable e não podem ir para um set.
+            values: list[Any] = []
+            for _, v in entries:
+                if not any(v == existing for existing in values):
+                    values.append(v)
             if len(values) > 1:
                 consolidated["conflicts"].append(
                     {"key": k, "values": [str(v) for v in values], "agents": [a for a, _ in entries]}
