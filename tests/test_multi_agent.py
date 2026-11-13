@@ -209,6 +209,35 @@ async def test_agent_runtime_cancel_running_task():
 
 
 @pytest.mark.asyncio
+async def test_agent_runtime_create_task_preserves_busy_state():
+    reg = AgentRegistry()
+    reg.register(
+        AgentManifest(agent_id="worker", name="Worker", role=AgentRole.ENGINEER)
+    )
+    rt = AgentRuntime(reg)
+    started = asyncio.Event()
+
+    async def long_handler(task):
+        started.set()
+        await asyncio.sleep(0.1)
+        return {}
+
+    rt.register_handler("worker", long_handler)
+    first = rt.create_task(agent_id="worker", description="first", input={})
+    running = asyncio.create_task(rt.execute_task(first))
+    await started.wait()
+
+    assert reg.get_state("worker") == AgentState.BUSY
+    rt.create_task(agent_id="worker", description="second", input={})
+    assert reg.get_state("worker") == AgentState.BUSY
+    # Enquanto executa, o dispatcher não deve considerar o agente disponível.
+    assert TaskDispatcher(reg, rt).find_agent_for_task() is None
+
+    await running
+    assert reg.get_state("worker") == AgentState.IDLE
+
+
+@pytest.mark.asyncio
 async def test_agent_runtime_timeout_is_terminal_for_cancel():
     reg = AgentRegistry()
     reg.register(
@@ -295,6 +324,20 @@ async def test_task_dispatcher_find_and_dispatch():
 
     # Nenhum agente com capacidade inexistente.
     assert dispatcher.find_agent_for_task(required_capabilities=("nonexistent",)) is None
+
+
+@pytest.mark.asyncio
+async def test_task_dispatcher_selects_agent_activated_by_lifecycle():
+    reg = AgentRegistry()
+    mgr = AgentLifecycleManager(reg)
+    mgr.spawn(
+        AgentManifest(agent_id="active-1", name="Active", role=AgentRole.ENGINEER),
+        auto_activate=True,
+    )
+    dispatcher = TaskDispatcher(reg, AgentRuntime(reg))
+
+    assert reg.get_state("active-1") == AgentState.ACTIVE
+    assert dispatcher.find_agent_for_task() == "active-1"
 
 
 @pytest.mark.asyncio
@@ -535,6 +578,21 @@ def test_agent_lifecycle_spawn_activate_terminate():
     assert mgr.terminate("agent-1") is True
     assert mgr.get_instance("agent-1").state == AgentState.TERMINATED
     assert reg.get_manifest("agent-1") is None  # desregistrado
+
+
+def test_agent_lifecycle_cannot_reactivate_terminated():
+    reg = AgentRegistry()
+    mgr = AgentLifecycleManager(reg)
+    mgr.spawn(
+        AgentManifest(agent_id="agent-1", name="A", role=AgentRole.ENGINEER),
+        auto_activate=True,
+    )
+    assert mgr.terminate("agent-1") is True
+
+    assert mgr.activate("agent-1") is False
+    assert mgr.get_instance("agent-1").state == AgentState.TERMINATED
+    assert reg.get_manifest("agent-1") is None
+    assert reg.get_state("agent-1") is None
 
 
 def test_agent_lifecycle_record_task_result():

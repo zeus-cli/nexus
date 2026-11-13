@@ -114,6 +114,161 @@ def test_outbox_persists_epoch_and_preserves_event_metadata(tmp_path):
     assert entry.event.dedup_key() == ev.dedup_key()
 
 
+def test_outbox_enqueue_persists_metadata(tmp_path):
+    """Metadados informados no enqueue devem sobreviver à leitura."""
+    outbox = TransactionalOutbox(tmp_path / "outbox.db")
+    entry_id = outbox.enqueue(
+        Event(kind="test.event", source="test", payload={"x": 1}),
+        metadata={"trace": "abc", "attempt": 1},
+    )
+
+    entry = outbox.get_pending()[0]
+    assert entry.entry_id == entry_id
+    assert entry.metadata == {"trace": "abc", "attempt": 1}
+    assert entry.as_dict()["metadata"] == {"trace": "abc", "attempt": 1}
+
+
+def test_outbox_metadata_survives_dead_letter_and_requeue(tmp_path):
+    """Metadados devem acompanhar o evento até o dead-letter e a volta."""
+    outbox = TransactionalOutbox(tmp_path / "outbox.db")
+    entry_id = outbox.enqueue(
+        Event(kind="test.event", source="test", payload={"x": 1}),
+        max_attempts=1,
+        metadata={"trace": "abc"},
+    )
+    assert outbox.mark_failed(entry_id, "permanent error") is True
+
+    dead = outbox.list_dead_letter()[0]
+    assert dead.metadata == {"trace": "abc"}
+
+    assert outbox.requeue_from_dead_letter(dead.entry_id) is True
+    pending = outbox.get_pending()[0]
+    assert pending.metadata == {"trace": "abc"}
+
+
+def test_outbox_manual_dead_letter_preserves_metadata(tmp_path):
+    """O caminho manual de dead-letter também deve preservar metadados."""
+    outbox = TransactionalOutbox(tmp_path / "outbox.db")
+    entry_id = outbox.enqueue(
+        Event(kind="test.event", source="test", payload={"x": 1}),
+        metadata={"trace": "manual"},
+    )
+    assert outbox.move_to_dead_letter(entry_id, "manual move") is True
+
+    dead = outbox.list_dead_letter()[0]
+    assert dead.metadata == {"trace": "manual"}
+
+
+def test_outbox_migrates_legacy_schema_for_metadata(tmp_path):
+    """Bancos criados sem a coluna metadata devem ser migrados na abertura."""
+    db_path = tmp_path / "legacy.db"
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE outbox (
+                entry_id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                source TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                dedup_key TEXT,
+                correlation_id TEXT,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 5,
+                next_retry_at REAL,
+                last_error TEXT,
+                recorded_at REAL NOT NULL,
+                delivered_at REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE dead_letter (
+                entry_id TEXT PRIMARY KEY,
+                original_entry_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                failed_attempts INTEGER NOT NULL,
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO outbox
+            (entry_id, event_id, kind, source, severity, payload, dedup_key,
+             correlation_id, created_at, status, attempts, max_attempts,
+             next_retry_at, last_error, recorded_at, delivered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-entry",
+                "legacy-event",
+                "test.event",
+                "test",
+                "info",
+                json.dumps({"x": 1}, separators=(",", ":")),
+                None,
+                None,
+                now.isoformat(),
+                OutboxStatus.PENDING.name,
+                0,
+                5,
+                now.timestamp(),
+                None,
+                now.timestamp(),
+                None,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO dead_letter
+            (entry_id, original_entry_id, event_id, kind, source, payload,
+             reason, failed_attempts, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-dead",
+                "legacy-entry",
+                "legacy-dead-event",
+                "test.event",
+                "test",
+                json.dumps({"x": 1}, separators=(",", ":")),
+                "legacy failure",
+                1,
+                now.timestamp(),
+            ),
+        )
+        conn.commit()
+
+    outbox = TransactionalOutbox(db_path)
+    assert outbox.get_pending()[0].metadata == {}
+    assert outbox.list_dead_letter()[0].metadata == {}
+
+    entry_id = outbox.enqueue(
+        Event(kind="test.event", source="test", payload={"x": 2}),
+        metadata={"trace": "new"},
+    )
+    entry = next(e for e in outbox.get_pending() if e.entry_id == entry_id)
+    assert entry.metadata == {"trace": "new"}
+
+    with sqlite3.connect(db_path) as conn:
+        outbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(outbox)")}
+        dead_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(dead_letter)")
+        }
+    assert "metadata" in outbox_columns
+    assert "metadata" in dead_columns
+
+
 def test_outbox_reads_legacy_envelope_payload(tmp_path):
     """Bancos antigos guardavam Event.to_dict(); o payload deve ser extraído."""
     db_path = tmp_path / "outbox.db"

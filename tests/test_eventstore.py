@@ -8,8 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from nexus_core.events import Event, Severity
+from nexus_core.eventbus import EventBus
 from nexus_core.memory.eventstore import CorruptEventError, EventStore, EventStoreError
 from nexus_core.memory.store import Database
+from nexus_core.recorder import EventRecorder
 
 
 def build_store(root: Path, **kwargs) -> tuple[Database, EventStore]:
@@ -200,6 +202,46 @@ class AppendQueryTest(StoreTestCase):
         store = EventStore(self.database, max_payload_bytes=64)
         with self.assertRaises(ValueError):
             store.append(Event(kind="a.b", source="s", payload={"blob": "x" * 200}))
+
+
+class RecorderDedupTest(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_event_is_not_republished(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database, store = build_store(Path(tmp))
+            self.addCleanup(database.close)
+            bus = EventBus()
+            delivered: list[str] = []
+            bus.subscribe("*", lambda event: delivered.append(event.event_id))
+            recorder = EventRecorder(store, bus)
+
+            first = await recorder.record(
+                Event(kind="system.heartbeat", source="app", payload={"uptime_s": 1})
+            )
+            second = await recorder.record(
+                Event(kind="system.heartbeat", source="app", payload={"uptime_s": 1})
+            )
+
+            self.assertEqual(first.event_id, second.event_id)
+            self.assertEqual(delivered, [first.event_id])
+
+    async def test_distinct_events_are_both_published(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database, store = build_store(Path(tmp))
+            self.addCleanup(database.close)
+            bus = EventBus()
+            delivered: list[str] = []
+            bus.subscribe("*", lambda event: delivered.append(event.event_id))
+            recorder = EventRecorder(store, bus)
+
+            first = await recorder.record(
+                Event(kind="system.heartbeat", source="app", payload={"uptime_s": 1})
+            )
+            second = await recorder.record(
+                Event(kind="system.heartbeat", source="app", payload={"uptime_s": 2})
+            )
+
+            self.assertNotEqual(first.event_id, second.event_id)
+            self.assertEqual(delivered, [first.event_id, second.event_id])
 
 
 class MaintenanceTest(StoreTestCase):
