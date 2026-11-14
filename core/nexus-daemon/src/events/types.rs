@@ -15,14 +15,12 @@ impl EventKind {
         if kind.is_empty() {
             return Err(EventError::InvalidKind(kind.to_string()));
         }
-        let valid = kind
-            .split('.')
-            .all(|segment| {
-                !segment.is_empty()
-                    && segment
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-            });
+        let valid = kind.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        });
         if !valid {
             return Err(EventError::InvalidKind(kind.to_string()));
         }
@@ -183,7 +181,133 @@ impl Event {
 
     /// Tamanho do payload serializado em bytes (para aplicação de limite).
     pub fn payload_size(&self) -> usize {
-        serde_json::to_vec(&self.payload).map(|v| v.len()).unwrap_or(0)
+        serde_json::to_vec(&self.payload)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
+    /// Valida o subconjunto do contrato v1 que o IPC aceita antes de persistir.
+    ///
+    /// `created_at` é checado como ISO-8601 UTC/offset porque um evento
+    /// inválido não deve entrar no store vindo de um cliente local.
+    pub fn validate_contract(&self) -> Result<(), String> {
+        if self.event_id.trim().is_empty() {
+            return Err("event_id vazio".to_string());
+        }
+        if !valid_event_kind(&self.kind) {
+            return Err(format!("kind inválido: {}", self.kind));
+        }
+        if self.source.trim().is_empty() || self.source.chars().any(char::is_whitespace) {
+            return Err("source deve ser não vazio e sem espaços".to_string());
+        }
+        if !matches!(
+            self.severity.as_str(),
+            "debug" | "info" | "warning" | "error" | "critical"
+        ) {
+            return Err(format!("severity inválida: {}", self.severity));
+        }
+        if !self.payload.is_object() {
+            return Err("payload deve ser um objeto JSON".to_string());
+        }
+        if let Some(correlation_id) = &self.correlation_id {
+            if correlation_id.is_empty() {
+                return Err("correlation_id não pode ser vazio quando presente".to_string());
+            }
+        }
+        if !valid_iso8601(&self.created_at) {
+            return Err(format!("created_at inválido: {}", self.created_at));
+        }
+        Ok(())
+    }
+}
+
+fn valid_event_kind(kind: &str) -> bool {
+    let mut segments = kind.split('.');
+    let first = segments.next().unwrap_or("");
+    let mut chars = first.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return false;
+    }
+    segments.all(|segment| {
+        !segment.is_empty()
+            && segment
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    })
+}
+
+/// Validação estrutural de `date-time` (ISO-8601/RFC 3339) sem dependência
+/// de `chrono`: data, hora, fração opcional e offset `Z`/`±HH:MM`.
+fn valid_iso8601(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20 {
+        return false;
+    }
+    let digits = |slice: &[u8]| slice.iter().all(u8::is_ascii_digit);
+    let number = |slice: &[u8]| -> Option<u32> {
+        if !digits(slice) {
+            return None;
+        }
+        std::str::from_utf8(slice).ok()?.parse().ok()
+    };
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return false;
+    }
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        number(&bytes[0..4]),
+        number(&bytes[5..7]),
+        number(&bytes[8..10]),
+        number(&bytes[11..13]),
+        number(&bytes[14..16]),
+        number(&bytes[17..19]),
+    ) else {
+        return false;
+    };
+    if year < 1 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return false;
+    }
+    if hour > 23 || minute > 59 || second > 60 {
+        return false;
+    }
+
+    let mut index = 19;
+    if bytes[index] == b'.' {
+        index += 1;
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index == start || index - start > 9 {
+            return false;
+        }
+    }
+    if index >= bytes.len() {
+        return false;
+    }
+    match bytes[index] {
+        b'Z' => index + 1 == bytes.len(),
+        b'+' | b'-' => {
+            if index + 6 != bytes.len() || bytes[index + 3] != b':' {
+                return false;
+            }
+            let Some(offset_hour) = number(&bytes[index + 1..index + 3]) else {
+                return false;
+            };
+            let Some(offset_minute) = number(&bytes[index + 4..index + 6]) else {
+                return false;
+            };
+            offset_hour <= 23 && offset_minute <= 59
+        }
+        _ => false,
     }
 }
 
@@ -228,9 +352,13 @@ mod tests {
 
     #[test]
     fn event_roundtrip_json() {
-        let ev = Event::new("system.started", "nexus-daemon", serde_json::json!({"pid": 1}))
-            .with_severity(Severity::Info)
-            .with_correlation("corr-123");
+        let ev = Event::new(
+            "system.started",
+            "nexus-daemon",
+            serde_json::json!({"pid": 1}),
+        )
+        .with_severity(Severity::Info)
+        .with_correlation("corr-123");
         let json = serde_json::to_string(&ev).unwrap();
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(back.event_id, ev.event_id);
@@ -241,7 +369,11 @@ mod tests {
 
     #[test]
     fn dedup_key_is_stable() {
-        let ev = Event::new("agent.task.started", "cognitive_core", serde_json::json!({"task_id": "x"}));
+        let ev = Event::new(
+            "agent.task.started",
+            "cognitive_core",
+            serde_json::json!({"task_id": "x"}),
+        );
         let k1 = ev.dedup_key().unwrap();
         let k2 = ev.dedup_key().unwrap();
         assert_eq!(k1, k2);
@@ -250,8 +382,8 @@ mod tests {
 
     #[test]
     fn dedup_opt_out_returns_none() {
-        let ev = Event::new("system.heartbeat", "nexus-daemon", serde_json::json!({}))
-            .with_dedup(false);
+        let ev =
+            Event::new("system.heartbeat", "nexus-daemon", serde_json::json!({})).with_dedup(false);
         assert!(ev.dedup_key().is_none());
     }
 
@@ -280,5 +412,44 @@ mod tests {
             error.to_string().contains("unknown field"),
             "dedup_key derivado não pode entrar no wire: {error}"
         );
+    }
+
+    #[test]
+    fn contract_validation_accepts_fixture_shapes() {
+        let event = Event::new("bridge.ping", "test", serde_json::json!({"n": 1}));
+        assert!(event.validate_contract().is_ok());
+        assert!(valid_iso8601("2026-11-14T12:00:00Z"));
+        assert!(valid_iso8601("2026-11-14T12:00:00.123456Z"));
+        assert!(valid_iso8601("2026-11-14T12:00:00+03:30"));
+        assert!(!valid_iso8601("2026-11-14T12:00:00"));
+        assert!(!valid_iso8601("not-a-date"));
+        assert!(!valid_iso8601("2026-13-14T12:00:00Z"));
+    }
+
+    #[test]
+    fn contract_validation_rejects_invalid_fields() {
+        let mut event = Event::new("bridge.ping", "test", serde_json::json!({}));
+        event.kind = "Bridge Ping".to_string();
+        assert!(event.validate_contract().is_err());
+
+        let mut event = Event::new("bridge.ping", "test", serde_json::json!({}));
+        event.source = "two words".to_string();
+        assert!(event.validate_contract().is_err());
+
+        let mut event = Event::new("bridge.ping", "test", serde_json::json!({}));
+        event.severity = "notice".to_string();
+        assert!(event.validate_contract().is_err());
+
+        let mut event = Event::new("bridge.ping", "test", serde_json::json!({}));
+        event.payload = serde_json::json!(["not", "object"]);
+        assert!(event.validate_contract().is_err());
+
+        let mut event = Event::new("bridge.ping", "test", serde_json::json!({}));
+        event.created_at = "2026-11-14 12:00:00".to_string();
+        assert!(event.validate_contract().is_err());
+
+        let mut event = Event::new("bridge.ping", "test", serde_json::json!({}));
+        event.correlation_id = Some(String::new());
+        assert!(event.validate_contract().is_err());
     }
 }

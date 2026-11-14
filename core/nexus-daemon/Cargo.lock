@@ -492,6 +492,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "jsonschema",
+ "libc",
  "rusqlite",
  "serde",
  "serde_jcs",

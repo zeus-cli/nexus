@@ -1,15 +1,66 @@
 //! Contratos JSON v1 compartilhados com o Python.
 //!
-//! Os schemas em `contracts/schemas` são a fonte da verdade. Este módulo
-//! existe para os testes de contrato e será promovido a módulo de produção
-//! quando o IPC de controle for implementado (T4).
+//! Os schemas em `contracts/schemas` são a fonte da verdade. O módulo é usado
+//! em produção pelo IPC de controle (T4) e pelos testes de contrato: os
+//! mesmos fixtures validam Python e Rust.
 
 #![allow(dead_code)]
 
+use crate::events::types::is_ijson;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 pub const CONTRACT_VERSION: &str = "1.0.0";
+
+const MAX_IDENTIFIER: usize = 256;
+const MAX_SCOPE: usize = 4096;
+const MAX_JUSTIFICATION: usize = 8192;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ContractError {
+    #[error("campo obrigatório vazio: {0}")]
+    EmptyField(&'static str),
+    #[error("campo {field} excede o limite de {max} bytes")]
+    FieldTooLong { field: &'static str, max: usize },
+    #[error("valor inválido para {field}: {value}")]
+    InvalidField { field: &'static str, value: String },
+    #[error("params deve ser um objeto JSON")]
+    ParamsNotObject,
+    #[error("params fora do domínio I-JSON e não pode ser assinado")]
+    NonIjsonParams,
+    #[error("falha ao canonicalizar {field}: {reason}")]
+    Canonicalization { field: &'static str, reason: String },
+}
+
+fn require_non_empty(field: &'static str, value: &str) -> Result<(), ContractError> {
+    if value.trim().is_empty() {
+        return Err(ContractError::EmptyField(field));
+    }
+    Ok(())
+}
+
+fn require_max(field: &'static str, value: &str, max: usize) -> Result<(), ContractError> {
+    if value.len() > max {
+        return Err(ContractError::FieldTooLong { field, max });
+    }
+    Ok(())
+}
+
+fn require_enum(field: &'static str, value: &str, allowed: &[&str]) -> Result<(), ContractError> {
+    if !allowed.contains(&value) {
+        return Err(ContractError::InvalidField {
+            field,
+            value: value.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn require_identifier(field: &'static str, value: &str) -> Result<(), ContractError> {
+    require_non_empty(field, value)?;
+    require_max(field, value, MAX_IDENTIFIER)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,6 +97,68 @@ pub struct AuthorizationRequest {
     pub justification: String,
 }
 
+impl AuthorizationRequest {
+    /// Valida o contrato antes de qualquer decisão de segurança.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        require_identifier("component_id", &self.component_id)?;
+        require_identifier("tool_id", &self.tool_id)?;
+        require_identifier("task_id", &self.task_id)?;
+        require_identifier("plan_id", &self.plan_id)?;
+        require_identifier("policy_version", &self.policy_version)?;
+        require_non_empty("fs_scope", &self.fs_scope)?;
+        require_max("fs_scope", &self.fs_scope, MAX_SCOPE)?;
+        require_non_empty("net_scope", &self.net_scope)?;
+        require_max("net_scope", &self.net_scope, MAX_SCOPE)?;
+        require_max("justification", &self.justification, MAX_JUSTIFICATION)?;
+        if !self.params.is_object() {
+            return Err(ContractError::ParamsNotObject);
+        }
+        require_enum(
+            "risk_level",
+            &self.risk_level,
+            &["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+        )?;
+        require_enum("execution_mode", &self.execution_mode, &["HOST", "SANDBOX"])?;
+        require_enum("access_level", &self.access_level, &["READ", "WRITE"])?;
+        require_enum(
+            "resource_limits",
+            &self.resource_limits,
+            &["default", "low", "medium", "high"],
+        )?;
+        if self.autonomy_level > 4 || self.required_autonomy > 4 {
+            return Err(ContractError::InvalidField {
+                field: "autonomy_level",
+                value: format!("{}/{}", self.autonomy_level, self.required_autonomy),
+            });
+        }
+        if let Some(approval_id) = &self.approval_id {
+            require_identifier("approval_id", approval_id)?;
+        }
+        if let Some(capability) = &self.required_capability {
+            require_identifier("required_capability", capability)?;
+        }
+        Ok(())
+    }
+
+    /// Projeção usada pelo Approval Manager para vincular a aprovação à
+    /// operação exata (mesmo hash canônico do Python).
+    pub fn approval_request(&self) -> ApprovalRequest {
+        ApprovalRequest {
+            tool_id: self.tool_id.clone(),
+            params: self.params.clone(),
+            task_id: self.task_id.clone(),
+            plan_id: self.plan_id.clone(),
+            execution_mode: self.execution_mode.clone(),
+            access_level: self.access_level.clone(),
+            fs_scope: self.fs_scope.clone(),
+            net_scope: self.net_scope.clone(),
+            resource_limits: self.resource_limits.clone(),
+            policy_version: self.policy_version.clone(),
+            justification: self.justification.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorizationResult {
@@ -71,6 +184,68 @@ pub struct ApprovalRequest {
     pub resource_limits: String,
     pub policy_version: String,
     pub justification: String,
+}
+
+impl ApprovalRequest {
+    /// Valida o contrato; `params` precisa estar no domínio I-JSON porque o
+    /// hash SHA-256 é um contrato Python ↔ Rust.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        require_identifier("tool_id", &self.tool_id)?;
+        require_identifier("task_id", &self.task_id)?;
+        require_identifier("plan_id", &self.plan_id)?;
+        require_identifier("policy_version", &self.policy_version)?;
+        require_non_empty("fs_scope", &self.fs_scope)?;
+        require_max("fs_scope", &self.fs_scope, MAX_SCOPE)?;
+        require_non_empty("net_scope", &self.net_scope)?;
+        require_max("net_scope", &self.net_scope, MAX_SCOPE)?;
+        require_max("justification", &self.justification, MAX_JUSTIFICATION)?;
+        if !self.params.is_object() {
+            return Err(ContractError::ParamsNotObject);
+        }
+        if !is_ijson(&self.params) {
+            return Err(ContractError::NonIjsonParams);
+        }
+        require_enum("execution_mode", &self.execution_mode, &["HOST", "SANDBOX"])?;
+        require_enum("access_level", &self.access_level, &["READ", "WRITE"])?;
+        require_enum(
+            "resource_limits",
+            &self.resource_limits,
+            &["default", "low", "medium", "high"],
+        )?;
+        Ok(())
+    }
+
+    /// SHA-256 do approval_request em JSON canônico RFC 8785.
+    ///
+    /// O algoritmo é o mesmo de `approval_request_hash` no Python: UTF-8,
+    /// chaves ordenadas, números I-JSON e `params` serializado como string.
+    pub fn params_hash(&self) -> Result<String, ContractError> {
+        self.validate()?;
+        let params_json = serde_jcs::to_string(&self.params).map_err(|error| {
+            ContractError::Canonicalization {
+                field: "params",
+                reason: error.to_string(),
+            }
+        })?;
+        let payload = serde_json::json!({
+            "tool_id": &self.tool_id,
+            "params": params_json,
+            "task_id": &self.task_id,
+            "plan_id": &self.plan_id,
+            "execution_mode": &self.execution_mode,
+            "access_level": &self.access_level,
+            "fs_scope": &self.fs_scope,
+            "net_scope": &self.net_scope,
+            "resource_limits": &self.resource_limits,
+            "policy_version": &self.policy_version,
+        });
+        let payload_json =
+            serde_jcs::to_string(&payload).map_err(|error| ContractError::Canonicalization {
+                field: "approval_request",
+                reason: error.to_string(),
+            })?;
+        Ok(hex::encode(Sha256::digest(payload_json.as_bytes())))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +279,21 @@ pub struct ApprovalDecision {
     pub decision: String,
     pub approver: String,
     pub timestamp: f64,
+}
+
+impl ApprovalDecision {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        require_identifier("approval_id", &self.approval_id)?;
+        require_identifier("approver", &self.approver)?;
+        require_enum("decision", &self.decision, &["APPROVED", "DENIED"])?;
+        if !self.timestamp.is_finite() || self.timestamp < 0.0 {
+            return Err(ContractError::InvalidField {
+                field: "timestamp",
+                value: self.timestamp.to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +330,6 @@ pub struct ToolSpec {
 mod tests {
     use super::*;
     use crate::events::types::{is_ijson, Event};
-    use sha2::{Digest, Sha256};
     use std::path::{Path, PathBuf};
 
     fn contracts_root() -> PathBuf {
@@ -288,25 +477,7 @@ mod tests {
     }
 
     fn approval_hash(request: &ApprovalRequest) -> String {
-        assert!(
-            is_ijson(&request.params),
-            "params fora do domínio I-JSON não podem ser assinados"
-        );
-        let params_json = serde_jcs::to_string(&request.params).expect("params canônico");
-        let payload = serde_json::json!({
-            "tool_id": &request.tool_id,
-            "params": params_json,
-            "task_id": &request.task_id,
-            "plan_id": &request.plan_id,
-            "execution_mode": &request.execution_mode,
-            "access_level": &request.access_level,
-            "fs_scope": &request.fs_scope,
-            "net_scope": &request.net_scope,
-            "resource_limits": &request.resource_limits,
-            "policy_version": &request.policy_version,
-        });
-        let payload_json = serde_jcs::to_string(&payload).expect("payload canônico");
-        hex::encode(Sha256::digest(payload_json.as_bytes()))
+        request.params_hash().expect("hash canônico")
     }
 
     #[test]

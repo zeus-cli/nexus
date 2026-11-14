@@ -2,7 +2,7 @@
 
 NEXUS is a production-grade, local-first Cognitive OS for Linux designed to bridge the gap between LLM reasoning and secure system automation. It transforms a diagnostic agent into a cognitive system capable of perceiving, planning, and executing complex tasks with mandatory human authorization for high-risk operations.
 
-**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **461 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, versioned Python ↔ Rust contracts, a single Event Fabric with transactional outbox/dead-letter in the EventStore database, an idempotent consumer and a UDS bridge to the Rust daemon, a persistent knowledge graph with provenance/confidence in the same governed SQLite, distributed WebSocket networking, and hardware-isolated sandboxing.
+**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **468 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, versioned Python ↔ Rust contracts, a single Event Fabric with transactional outbox/dead-letter in the EventStore database, an idempotent consumer and a local UDS bridge with versioned handshake and control commands (`authorize`, approval, `health`, `event`) to the Rust daemon, a persistent knowledge graph with provenance/confidence in the same governed SQLite, distributed WebSocket networking, and hardware-isolated sandboxing.
 
 ## 🧠 Cognitive Architecture
 
@@ -114,7 +114,7 @@ The `ApprovalAPI` allows humans to manage pending requests:
 NEXUS maintains a rigorous testing suite covering the entire security chain:
 
 ```bash
-# Run the full suite (461 tests, 12 subtests)
+# Run the full suite (468 tests, 12 subtests)
 pytest tests/
 
 # Verify the E2E HITL flow (Request -> Suspension -> Approval -> Execution)

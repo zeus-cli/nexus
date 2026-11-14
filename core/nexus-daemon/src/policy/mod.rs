@@ -33,13 +33,82 @@ impl PolicyEngine {
 
     pub fn evaluate(&self, ctx: &PolicyContext) -> PolicyEvaluation {
         let (decision, reason) = match ctx.risk_level.as_str() {
-            "critical" => (PolicyDecision::Deny, "critical operations denied by default policy".to_string()),
-            "high" => (PolicyDecision::RequireApproval, "high risk operations require explicit human approval".to_string()),
-            "medium" => (PolicyDecision::RequireApproval, "medium risk operations require human verification".to_string()),
-            "low" => (PolicyDecision::Allow, "low risk operation permitted".to_string()),
-            _ => (PolicyDecision::Deny, "no matching policy rule found; denying by default".to_string()),
+            "critical" => (
+                PolicyDecision::Deny,
+                "critical operations denied by default policy".to_string(),
+            ),
+            "high" => (
+                PolicyDecision::RequireApproval,
+                "high risk operations require explicit human approval".to_string(),
+            ),
+            "medium" => (
+                PolicyDecision::RequireApproval,
+                "medium risk operations require human verification".to_string(),
+            ),
+            "low" => (
+                PolicyDecision::Allow,
+                "low risk operation permitted".to_string(),
+            ),
+            _ => (
+                PolicyDecision::Deny,
+                "no matching policy rule found; denying by default".to_string(),
+            ),
         };
         PolicyEvaluation { decision, reason }
+    }
+
+    /// Classificação determinística usada pelo Execution Gate do IPC.
+    ///
+    /// Espelha `ExecutionGate._classify_risk` do Python enquanto a paridade
+    /// completa de policy pertence ao T5. Risco desconhecido é negado.
+    pub fn evaluate_authorization(
+        &self,
+        risk_level: &str,
+        access_level: &str,
+        fs_scope: &str,
+        autonomy_level: u8,
+        required_autonomy: u8,
+    ) -> PolicyEvaluation {
+        let (decision, reason) = match risk_level {
+            "CRITICAL" => (
+                PolicyDecision::Deny,
+                "critical operations denied by default policy",
+            ),
+            "HIGH" => (
+                PolicyDecision::RequireApproval,
+                "high risk operations require explicit human approval",
+            ),
+            "MEDIUM" => (
+                PolicyDecision::RequireApproval,
+                "medium risk operations require human verification",
+            ),
+            "LOW" => {
+                if access_level == "WRITE" && fs_scope != "SAFE_ZONE" {
+                    (
+                        PolicyDecision::RequireApproval,
+                        "low risk write outside safe zone requires approval",
+                    )
+                } else if autonomy_level >= required_autonomy {
+                    (
+                        PolicyDecision::Allow,
+                        "low risk operation permitted within approved scope",
+                    )
+                } else {
+                    (
+                        PolicyDecision::RequireApproval,
+                        "insufficient autonomy for low-risk operation",
+                    )
+                }
+            }
+            _ => (
+                PolicyDecision::Deny,
+                "unknown risk level; denying by default",
+            ),
+        };
+        PolicyEvaluation {
+            decision,
+            reason: reason.to_string(),
+        }
     }
 }
 

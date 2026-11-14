@@ -9,8 +9,9 @@ contrato sem atualizar esta árvore e os testes dos dois lados.
 - **Dialeto:** JSON Schema Draft 2020-12 (`$schema` em todos os arquivos)
 - **Namespace:** `urn:nexus:contracts:v1:<nome>`
 - **Validação Python:** `nexus_core/contracts.py` (biblioteca `jsonschema`)
-- **Validação Rust:** `core/nexus-daemon/src/contracts.rs` (dev-dependency
-  `jsonschema`, sem features de rede)
+- **Validação Rust:** `core/nexus-daemon/src/contracts.rs` (produção para os
+  tipos de wire; `jsonschema` como dev-dependency para validar os mesmos
+  fixtures)
 
 ## Estrutura
 
@@ -65,7 +66,8 @@ contracts/
 
 O hash vincula a aprovação à operação exata (tool, parâmetros, tarefa, plano e
 escopo). O algoritmo é idêntico em Python (`approval_request_hash`) e Rust
-(`approval_hash` nos testes de contrato):
+(`contracts::ApprovalRequest::params_hash`, usado em produção pelo IPC desde o
+T4):
 
 1. Serializar `params` em **JSON Canônico RFC 8785 (JCS)**, gerando
    `params_json` (bytes UTF-8). O JCS ordena chaves, não escapa não-ASCII e
@@ -139,6 +141,31 @@ compatível com dados antigos; ele não é o material do `dedup_key`.
 - **Toda alteração** deve atualizar `manifest.json`, os fixtures afetados e os
   testes Python e Rust no mesmo commit.
 
+## IPC de controle (T4)
+
+O protocolo do soquete é newline-JSON com frames `{"type": ..., "body": ...}`.
+O primeiro frame é obrigatório:
+
+```json
+{"type": "Hello", "body": {"protocol_version": "1.0.0", "component_id": "python-runtime"}}
+```
+
+O daemon responde `Welcome {protocol_version, server_version, component_id,
+peer_uid}` ou `VersionMismatch {supported, received}`. A compatibilidade é
+apenas por major: `1.x` é aceito, `2.0.0` é recusado. A autenticação é local e
+acontece antes do handshake: `SO_PEERCRED` precisa apontar para o mesmo UID
+efetivo do daemon, e o soquete é `0600`. Handshake sem `Hello` em 10 s, frame
+acima de 1 MiB ou linha sem terminador encerram a conexão.
+
+Comandos de controle: `Authorize {request}` (schema
+`authorization_request`), `ApprovalRequest {request}` (schema
+`approval_request`), `ApprovalDecision {decision}` (schema
+`approval_decision`), `ApprovalStatus {approval_id}`, `Health` e `Event`
+(schema `event`). As respostas carregam `AuthorizationResponse {result}`,
+`ApprovalResponse {approval}` ou `HealthResponse {status, protocol_version}`,
+além de `Ack`, `Subscribed` e `Delivered` do barramento. Os schemas desta
+árvore são a fonte da verdade; qualquer campo desconhecido é rejeitado.
+
 ## Validação
 
 Python (a partir da raiz do repositório):
@@ -167,8 +194,16 @@ validate_contract("event", payload)
 
 ## Escopo atual e próximo passo
 
-Os tipos Rust de contrato são **test-only** (`#[cfg(test)] mod contracts;`) até
-o T4. O objetivo é garantir que o wire congelado em v1.0.0 seja implementado
-pelo IPC Rust sem divergência. A autoridade de política, aprovação e gate
-continua em Python até T4–T6; a migração deve preservar estes contratos e os
-vetores de hash.
+Os tipos Rust de contrato são **de produção** desde o T4: o IPC do daemon usa
+`AuthorizationRequest`, `ApprovalRequest`, `ApprovalDecision`,
+`AuthorizationResult` e `ApprovalRecord` com `deny_unknown_fields`, e a bridge
+Python valida os mesmos schemas na saída e na resposta. O handshake do IPC usa
+`IPC_PROTOCOL_VERSION = "1.0.0"` e compatibilidade apenas por major; o contrato
+de evento continua em `1.0.0`.
+
+A autoridade de política, aprovação e gate **continua em Python** até T5–T6. O
+T4 expõe a superfície de controle local (handshake, `SO_PEERCRED`/UID,
+`Authorize`, aprovação, `Health` e `Event`), mas não torna o Rust a autoridade
+final; a migração deve preservar estes contratos e os vetores de hash. O T5
+fecha a paridade de Policy Engine/Approval Manager (revogação, TTL, uso único,
+persistência) e o T6 o ciclo `authorize → executar → commit`.

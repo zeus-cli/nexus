@@ -22,6 +22,7 @@ sha2 = "0.10"
 hex = "0.4"
 thiserror = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
+libc = "0.2"
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }

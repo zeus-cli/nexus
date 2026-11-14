@@ -1,6 +1,6 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.4
+**Versão:** 1.5
 **Atualizado:** 2026-11-14
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
@@ -47,11 +47,12 @@ NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 
 **Novo (Fase 1):** `core/nexus-daemon/` (Rust, Tokio) — Control Plane em construção:
 * barramento de eventos (memória) + store SQLite WAL com dedup;
-* servidor IPC sobre Unix Domain Socket (protocolo JSON por linha, compatível com o sentinel);
+* servidor IPC sobre Unix Domain Socket (protocolo JSON por linha, compatível com o sentinel), com handshake `Hello`/`Welcome`, autenticação por `SO_PEERCRED`/UID e soquete `0600` (T4);
+* comandos de controle `Authorize`, `ApprovalRequest`, `ApprovalDecision`, `ApprovalStatus`, `Health` e `Event`, com timeout de handshake, limite de frame e versão de protocolo `1.0.0`;
 * supervisor de ciclo de vida de serviços;
  * health check, logging estruturado, configuração TOML estrita;
  * security guard, policy engine e execution gate mínimos (Fase 1);
- * contratos v1.0.0 compartilhados com o Python em `contracts/` (schemas, fixtures e vetores de hash), validados pelos dois lados;
+ * contratos v1.0.0 compartilhados com o Python em `contracts/` (schemas, fixtures e vetores de hash), validados pelos dois lados e usados em produção pelo IPC (T4);
  * Event Fabric com fachada única `store.append → bus.publish`, IPC com `Subscribe`/`Unsubscribe`/`Delivered`, dedup sem republicação e bridge UDS Python validando o contrato de evento antes do envio.
 
 ---
@@ -62,7 +63,7 @@ NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 Componentes: Nexus Daemon, System Supervisor, Identity Manager, Policy Engine, Execution Gate, Permission Manager, Approval Manager, Security Guard, Resource Manager, Service Lifecycle Manager.
 * Não depende de LLM para segurança.
 * Decisões de autorização determinísticas, explícitas e verificáveis.
-* Contratos de wire v1.0.0 congelados em `contracts/` (evento, autorização, aprovação, resultado de execução e tool spec), com schemas JSON Schema 2020-12 e fixtures validados por Python e Rust. O módulo Rust de contratos é test-only até o IPC do T4.
+* Contratos de wire v1.0.0 congelados em `contracts/` (evento, autorização, aprovação, resultado de execução e tool spec), com schemas JSON Schema 2020-12 e fixtures validados por Python e Rust. O módulo Rust de contratos é usado em produção pelo IPC de controle desde o T4.
 
 ### Cognitive Plane (Python)
 Componentes: Cognitive Core, Intent Engine, Context Engine, Reasoning Engine, Knowledge Engine, Decision Engine, Planner, Reflection Engine, LLM Router, Memory Manager.
@@ -126,7 +127,7 @@ Componentes: World Builder, World Registry, Entity Manager, State Manager, Rules
 
 Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime, adaptadores (Filesystem, Process, Network, Browser, Application, API, Developer Tools).
 * Todas as operações do mundo real devem passar pelo Control Plane.
-* **Estado atual:** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O gate é obrigatório no caminho do runtime Python; a autoridade ainda é Python e a migração para o daemon Rust é T4–T6 (TD-015 resolvido).
+* **Estado atual:** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O gate é obrigatório no caminho do runtime Python; a autoridade ainda é Python e a migração para o daemon Rust é T5–T6 (TD-015 resolvido; o T4 entregou apenas a superfície de controle local).
 
 **Componentes de Secure Agency da Fase 3 (implementados e testados):**
 
@@ -301,8 +302,54 @@ continua com achados pré-existentes.
 
 ---
 
-## 11. Próximos passos do roadmap
+## 11. T4 — IPC de controle no daemon Rust (2026-11-14)
 
-T4 — IPC de controle no daemon Rust: outbox/offsets duráveis, contratos de
-autorização em produção e claim transacional de consumidores. A autoridade de
-segurança só migra para o Control Plane depois disso (T5–T6).
+O T4 transformou o IPC do daemon em uma superfície de controle local sem mover
+a autoridade final de segurança:
+
+* todo cliente envia `Hello {protocol_version, component_id}` e recebe
+  `Welcome` ou `VersionMismatch`; `IPC_PROTOCOL_VERSION` é `1.0.0` e a
+  compatibilidade é apenas por major (`1.x`);
+* a autenticação acontece antes do handshake, via `SO_PEERCRED`/`geteuid`: o
+  peer precisa ter o mesmo UID efetivo do daemon, sem exceção para root; o
+  soquete é `0600`;
+* handshake tem timeout de 10 s, escrita 5 s e frames são limitados a 1 MiB
+  (linha sem terminador é recusada);
+* comandos disponíveis: `Authorize`, `ApprovalRequest`, `ApprovalDecision`,
+  `ApprovalStatus`, `Health` e `Event`; respostas de controle carregam
+  `protocol_version`;
+* `contracts.rs` passou de test-only para produção e valida
+  `AuthorizationRequest`, `ApprovalRequest` e `ApprovalDecision` com os mesmos
+  fixtures/`deny_unknown_fields`; eventos são validados antes de entrar no
+  Event Fabric;
+* `ExecutionGate::authorize_request` espelha a classificação do Python:
+  `CRITICAL` nega; `HIGH`/`MEDIUM` exigem aprovação; `LOW` com escrita fora de
+  `SAFE_ZONE` ou autonomia insuficiente exige aprovação; risco desconhecido e
+  contrato inválido negam;
+* `ApprovalManager` do daemon usa hash canônico JCS/SHA-256, TTL padrão de
+  3600 s, decisão única, claim atômico e uso único; `APPROVED` vira `CLAIMED`
+  na autorização, e `CLAIMED → CONSUMED` fica para o T6;
+* aprovações são em memória: reiniciar o daemon invalida pendências
+  (fail-closed). Revogação, persistência e paridade ampla pertencem ao T5;
+* a bridge `nexus_core/event_bridge.py` negocia o handshake e adiciona
+  `authorize`, `approval_request`, `approval_decide` e `approval_status`,
+  validando contratos na saída e na resposta.
+
+**Fora do escopo do T4:** mover a autoridade final para o Rust, persistir
+aprovações, outbox/offsets duráveis por assinante, TLS, autenticação por token
+e rate limit. O runtime Python continua sendo o gate obrigatório; a API
+permanece local e não deve ser exposta remotamente até o T5/T6.
+
+**Validação:** 468 testes + 12 subtests Python; `cargo test` no daemon com 67
+testes. `compileall`, `node --check` e `git diff --check` limpos nos arquivos do
+T4; o `ruff` global continua com achados pré-existentes.
+
+---
+
+## 12. Próximos passos do roadmap
+
+T5 — Policy Engine + Approval Manager no Rust com paridade de decisão,
+revogação, TTL, uso único, persistência/migração e testes de paridade. Depois,
+T6 fecha o ciclo `authorize → executar → commit` no Control Plane. A autoridade
+de segurança só migra para o Rust após esses gates; até lá, o Python continua
+sendo a autoridade efetiva e a API não deve ser exposta remotamente.

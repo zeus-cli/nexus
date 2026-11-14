@@ -160,7 +160,7 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 |------------|-------|
 | P0 | TD-001, TD-010 (abertos); TD-002 (resolvido) |
 | P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020 |
-| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019, TD-021 |
+| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019, TD-021 (parcial) |
 | P3 | TD-004 |
 | P4 | TD-006 (parcial) |
 
@@ -172,7 +172,7 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 **Resolução:** `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine` e `ApprovalManager` do runtime e o injeta no `AutomationEngine`. `AutomationEngine.run()` chama `authorize()` antes de reivindicar/executar a aprovação e `commit()` registra o resultado real da execução. O caminho `gate.execute(runner=None)` foi removido; não há mais execução fantasma. Cobertura em `tests/test_e2e_execution_gate.py` e `tests/test_execution_gate.py`.
 
-**Próxima ação:** substituir a autoridade Python pelo daemon Rust (T4–T6), mantendo a interface `authorize → executar → commit` e o fail-closed.
+**Próxima ação:** substituir a autoridade Python pelo daemon Rust (T5–T6), mantendo a interface `authorize → executar → commit` e o fail-closed. O T4 entregou a superfície de controle local, mas não moveu a autoridade final.
 
 ---
 
@@ -226,23 +226,27 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-021 — Limites do Event Fabric após o T2 (P2) — Open
+## TD-021 — Limites do Event Fabric após o T4 (P2) — Parcial
 
 **Descrição:** O T2 fechou a atomicidade `EventStore + outbox` e adicionou
-consumidor idempotente, mas três fronteiras continuam deliberadamente abertas:
+consumidor idempotente; o T4 adicionou handshake versionado, autenticação
+`SO_PEERCRED`/UID e soquete `0600` ao IPC. Duas fronteiras continuam
+deliberadamente abertas:
 
 1. o outbox durável e os offsets/acks por assinante ainda não existem no daemon
    Rust — o `EventBus` é em memória e um cliente desconectado perde eventos;
 2. `IdempotentConsumer` garante efeito at-most-once apenas dentro de um processo;
-   múltiplos processos consumidores exigem claim transacional;
-3. a bridge UDS não tem autenticação/TLS própria; qualquer processo do mesmo
-   usuário pode publicar/assinar no socket.
+   múltiplos processos consumidores exigem claim transacional.
 
-**Impacto:** entrega confiável no runtime Python atual, mas ainda não há
-durabilidade de assinatura no Control Plane nem isolamento entre processos
-locais não confiáveis.
+Além disso, a autenticação do IPC é por UID: processos do mesmo usuário não são
+isolados entre si, e não há TLS nem autenticação por token. Isso é intencional
+enquanto o soquete é local e o Python continua sendo a autoridade final.
 
-**Próxima ação:** implementar outbox/offsets no Rust e promover os contratos de
-autorização a produção no T4; introduzir claim transacional de consumidor e
-identidade de componente no IPC antes de mover o gate para o Control Plane
-(T5–T6). Não expor o socket remotamente até lá.
+**Impacto:** entrega confiável no runtime Python atual e controle local
+protegido contra outros UIDs, mas ainda não há durabilidade de assinatura no
+Control Plane nem isolamento entre processos do mesmo usuário.
+
+**Próxima ação:** implementar outbox/offsets no Rust e claim transacional de
+consumidor antes de mover o gate para o Control Plane (T5–T6); TLS,
+autenticação por token e rate limit pertencem ao endurecimento posterior. Não
+expor o socket remotamente até o gate Rust estar fechado.

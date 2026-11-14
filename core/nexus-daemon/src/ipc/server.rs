@@ -1,33 +1,55 @@
-use super::protocol::{IpcFrame, OutgoingFrame};
+//! Servidor IPC local sobre Unix Domain Socket.
+//!
+//! O T4 adiciona ao barramento de eventos um plano de controle mínimo:
+//! handshake versionado, autenticação por `SO_PEERCRED`/UID, comandos
+//! `Authorize`, `ApprovalRequest`, `ApprovalDecision`, `ApprovalStatus`,
+//! `Health` e `Event`. A autoridade final continua no runtime Python até o
+//! T5/T6; aqui a decisão é determinística e fail-closed.
+
+use super::auth::{self, PeerCredentials};
+use super::protocol::{
+    protocol_is_compatible, IpcFrame, OutgoingFrame, IPC_PROTOCOL_VERSION, MAX_FRAME_BYTES,
+};
+use crate::approval::ApprovalManager;
 use crate::events::bus::Pattern;
-use crate::events::types::Event;
 use crate::events::{EventBus, EventFabric};
+use crate::execution::ExecutionGate;
 use crate::health::check::HealthChecker;
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
-/// Contexto de um cliente conectado: ids de inscrições ativas.
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const DEDUP_WINDOW_SECONDS: i64 = 24 * 60 * 60;
+
+/// Contexto de um cliente autenticado: identidade e inscrições ativas.
 pub struct ClientContext {
+    pub component_id: String,
     pub subscription_ids: Vec<String>,
 }
 
-/// Servidor IPC sobre Unix Domain Socket (threads dedicadas, bloqueantes).
-///
-/// Aceita conexões locais, expõe o barramento de eventos e o health check via
-/// protocolo JSON por linha. Cada cliente recebe um thread dedicado de leitura
-/// e um canal de saída (mpmc) para entrega de eventos assíncrona.
-pub struct IpcServer {
-    socket_path: String,
+struct ServerState {
     bus: Arc<EventBus>,
     fabric: Arc<EventFabric>,
     health: Arc<HealthChecker>,
     security: Arc<Mutex<crate::security::SecurityGuard>>,
+    gate: ExecutionGate,
+    approvals: ApprovalManager,
+    clients: Mutex<HashMap<String, ClientContext>>,
     handle: tokio::runtime::Handle,
-    clients: Arc<Mutex<HashMap<String, ClientContext>>>,
+}
+
+/// Servidor IPC sobre Unix Domain Socket (threads dedicadas, bloqueantes).
+pub struct IpcServer {
+    socket_path: String,
+    state: Arc<ServerState>,
+    expected_uid: u32,
+    handshake_timeout: Duration,
 }
 
 impl IpcServer {
@@ -40,67 +62,91 @@ impl IpcServer {
     ) -> Self {
         Self {
             socket_path,
-            bus: Arc::clone(fabric.bus()),
-            fabric,
-            health,
-            security,
-            handle,
-            clients: Arc::new(Mutex::new(HashMap::new())),
+            state: Arc::new(ServerState {
+                bus: Arc::clone(fabric.bus()),
+                fabric,
+                health,
+                security,
+                gate: ExecutionGate::new(),
+                approvals: ApprovalManager::new(),
+                clients: Mutex::new(HashMap::new()),
+                handle,
+            }),
+            expected_uid: auth::current_uid(),
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
         }
+    }
+
+    /// Ajusta o prazo máximo para o primeiro frame (`Hello`).
+    pub fn with_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_expected_uid(mut self, uid: u32) -> Self {
+        self.expected_uid = uid;
+        self
     }
 
     /// Faz bind e inicia a thread de accept, retornando imediatamente.
     ///
     /// O bind acontece antes do retorno, então testes e clientes podem
-    /// conectar assim que o método conclui.
+    /// conectar assim que o método conclui. O soquete é restrito ao dono
+    /// (`0600`) e cada conexão passa por `SO_PEERCRED` antes do handshake.
     pub fn spawn(self) -> Result<(), std::io::Error> {
         let path = std::path::Path::new(&self.socket_path);
         if path.exists() {
             let _ = std::fs::remove_file(path);
         }
         let listener = UnixListener::bind(path)?;
+        auth::restrict_socket_permissions(path).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, error.to_string())
+        })?;
         info!(
             component = "ipc",
             socket = %self.socket_path,
+            protocol_version = IPC_PROTOCOL_VERSION,
             "servidor IPC escutando"
         );
 
-        let bus = Arc::clone(&self.bus);
-        let fabric = Arc::clone(&self.fabric);
-        let health = Arc::clone(&self.health);
-        let security = Arc::clone(&self.security);
-        let clients = Arc::clone(&self.clients);
-        let handle = self.handle.clone();
+        let state = Arc::clone(&self.state);
+        let expected_uid = self.expected_uid;
+        let handshake_timeout = self.handshake_timeout;
 
-        // Thread de accept: aceita conexões e spawns uma thread de leitura por cliente.
         thread::spawn(move || {
             for stream_res in listener.incoming() {
                 match stream_res {
                     Ok(stream) => {
-                        let stream = stream;
-                        // Sem read timeout: uma assinatura ociosa é normal e não
-                        // deve gerar frames de erro espúrios. O write timeout
-                        // permanece para não bloquear em clientes que pararam
-                        // de ler.
-                        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
-
-                        let bus = Arc::clone(&bus);
-                        let fabric = Arc::clone(&fabric);
-                        let health = Arc::clone(&health);
-                        let security = Arc::clone(&security);
-                        let clients = Arc::clone(&clients);
-                        let handle = handle.clone();
-
+                        let state = Arc::clone(&state);
                         thread::spawn(move || {
-                            if let Err(e) = handle_connection(
-                                stream, bus, fabric, health, security, clients, handle,
-                            ) {
-                                warn!(component = "ipc", error = %e, "conexão encerrada com erro");
+                            let peer = match auth::peer_credentials(&stream) {
+                                Ok(peer) => peer,
+                                Err(error) => {
+                                    warn!(component = "ipc", error = %error, "peer sem credenciais; conexão encerrada");
+                                    return;
+                                }
+                            };
+                            if let Err(error) = auth::authorize_peer(peer.uid, expected_uid) {
+                                warn!(
+                                    component = "ipc",
+                                    uid = peer.uid,
+                                    pid = peer.pid,
+                                    error = %error,
+                                    "peer UID não autorizado; conexão encerrada"
+                                );
+                                send_auth_error(stream, "peer UID não autorizado");
+                                return;
+                            }
+                            if let Err(error) =
+                                handle_connection(stream, state, peer, handshake_timeout)
+                            {
+                                warn!(component = "ipc", error = %error, "conexão encerrada com erro");
                             }
                         });
                     }
-                    Err(e) => {
-                        error!(component = "ipc", error = %e, "falha ao aceitar conexão");
+                    Err(error) => {
+                        error!(component = "ipc", error = %error, "falha ao aceitar conexão");
                     }
                 }
             }
@@ -118,128 +164,255 @@ impl IpcServer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+fn send_auth_error(mut stream: UnixStream, message: &str) {
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+    let frame = OutgoingFrame::Error {
+        error: message.to_string(),
+    };
+    if let Ok(line) = serde_json::to_string(&frame) {
+        let _ = stream.write_all(format!("{line}\n").as_bytes());
+    }
+}
+
 fn handle_connection(
     stream: UnixStream,
-    bus: Arc<EventBus>,
-    fabric: Arc<EventFabric>,
-    health: Arc<HealthChecker>,
-    security: Arc<Mutex<crate::security::SecurityGuard>>,
-    clients: Arc<Mutex<HashMap<String, ClientContext>>>,
-    handle: tokio::runtime::Handle,
+    state: Arc<ServerState>,
+    peer: PeerCredentials,
+    handshake_timeout: Duration,
 ) -> Result<(), String> {
-    let client_id = uuid::Uuid::new_v4().to_string();
+    let client_id = uuid::Uuid::new_v4().simple().to_string();
+    stream
+        .set_write_timeout(Some(WRITE_TIMEOUT))
+        .map_err(|error| format!("write timeout: {error}"))?;
     let (out_tx, out_rx) = std::sync::mpsc::channel::<OutgoingFrame>();
 
-    {
-        let mut c = clients.lock().unwrap();
-        c.insert(
-            client_id.clone(),
-            ClientContext {
-                subscription_ids: Vec::new(),
-            },
-        );
-    }
-
-    // Thread de escrita: consome o canal e escreve no socket.
-    let write_stream = stream.try_clone().map_err(|e| e.to_string())?;
-    let clients_w = Arc::clone(&clients);
-    let client_id_w = client_id.clone();
+    // Thread de escrita: consome o canal e escreve no socket. A limpeza de
+    // assinaturas pertence à thread de leitura, para não deixar inscrições
+    // órfãs quando o cliente desconecta.
+    let write_stream = stream
+        .try_clone()
+        .map_err(|error| format!("clone do socket: {error}"))?;
     let write_handle = thread::spawn(move || {
         let mut writer = write_stream;
         for frame in out_rx {
-            let line = serde_json::to_string(&frame).unwrap_or_default();
+            let line = match serde_json::to_string(&frame) {
+                Ok(line) => line,
+                Err(error) => {
+                    warn!(component = "ipc", error = %error, "frame não serializável");
+                    continue;
+                }
+            };
             if writer.write_all(format!("{line}\n").as_bytes()).is_err() {
                 break;
             }
         }
-        // Cliente desconectou: remove do mapa (a limpeza de assinaturas já
-        // aconteceu no fim da thread de leitura).
-        let mut c = clients_w.lock().unwrap();
-        c.remove(&client_id_w);
     });
 
-    // Thread de leitura: processa frames vindos do cliente.
-    use std::io::BufRead;
-    let reader = std::io::BufReader::new(stream);
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(e) => {
-                let _ = out_tx.send(OutgoingFrame::Error {
-                    error: format!("leitura: {e}"),
-                });
+    let mut reader = BufReader::new(stream);
+    reader
+        .get_ref()
+        .set_read_timeout(Some(handshake_timeout))
+        .map_err(|error| format!("read timeout do handshake: {error}"))?;
+
+    let component_id = match perform_handshake(&mut reader, &state, &peer, &out_tx)? {
+        Some(component_id) => component_id,
+        None => {
+            drop(out_tx);
+            let _ = write_handle.join();
+            return Ok(());
+        }
+    };
+
+    reader
+        .get_ref()
+        .set_read_timeout(None)
+        .map_err(|error| format!("remoção do read timeout: {error}"))?;
+
+    {
+        let mut clients = state.clients.lock().expect("lock de clients");
+        clients.insert(
+            client_id.clone(),
+            ClientContext {
+                component_id: component_id.clone(),
+                subscription_ids: Vec::new(),
+            },
+        );
+    }
+    info!(
+        component = "ipc",
+        client_id = %client_id,
+        component_id = %component_id,
+        uid = peer.uid,
+        pid = peer.pid,
+        "cliente autenticado"
+    );
+
+    loop {
+        let line = match read_frame_line(&mut reader) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = out_tx.send(OutgoingFrame::Error { error });
                 break;
             }
         };
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let frame: IpcFrame = match serde_json::from_str(line) {
-            Ok(f) => f,
-            Err(e) => {
+        let frame: IpcFrame = match serde_json::from_str(&line) {
+            Ok(frame) => frame,
+            Err(error) => {
                 let _ = out_tx.send(OutgoingFrame::Error {
-                    error: format!("JSON inválido: {e}"),
+                    error: format!("JSON inválido: {error}"),
                 });
                 continue;
             }
         };
-
-        match handle_frame(
-            &frame,
-            &client_id,
-            Arc::clone(&bus),
-            Arc::clone(&fabric),
-            Arc::clone(&health),
-            Arc::clone(&security),
-            Arc::clone(&clients),
-            handle.clone(),
-            out_tx.clone(),
-        ) {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = out_tx.send(OutgoingFrame::Error {
-                    error: e.to_string(),
-                });
-            }
+        if let Err(error) = handle_frame(&frame, &state, &client_id, &out_tx) {
+            let _ = out_tx.send(OutgoingFrame::Error { error });
         }
     }
 
-    // Limpeza ao desconectar: remove assinaturas do barramento antes de
-    // fechar o canal de saída, senão as threads de entrega ficariam órfãs.
     let subscription_ids = {
-        let mut c = clients.lock().unwrap();
-        c.remove(&client_id)
-            .map(|ctx| ctx.subscription_ids)
+        let mut clients = state.clients.lock().expect("lock de clients");
+        clients
+            .remove(&client_id)
+            .map(|context| context.subscription_ids)
             .unwrap_or_default()
     };
     for id in subscription_ids {
-        handle.block_on(bus.unsubscribe(&id));
+        state.handle.block_on(state.bus.unsubscribe(&id));
     }
     drop(out_tx);
     let _ = write_handle.join();
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+fn perform_handshake(
+    reader: &mut BufReader<UnixStream>,
+    state: &ServerState,
+    peer: &PeerCredentials,
+    out_tx: &std::sync::mpsc::Sender<OutgoingFrame>,
+) -> Result<Option<String>, String> {
+    let line = match read_frame_line(reader) {
+        Ok(Some(line)) => line,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let _ = out_tx.send(OutgoingFrame::Error { error });
+            return Ok(None);
+        }
+    };
+    let frame: IpcFrame = match serde_json::from_str(&line) {
+        Ok(frame) => frame,
+        Err(error) => {
+            let _ = out_tx.send(OutgoingFrame::Error {
+                error: format!("JSON inválido no handshake: {error}"),
+            });
+            return Ok(None);
+        }
+    };
+    let (protocol_version, component_id) = match frame {
+        IpcFrame::Hello {
+            protocol_version,
+            component_id,
+        } => (protocol_version, component_id),
+        _ => {
+            let _ = out_tx.send(OutgoingFrame::Error {
+                error: "handshake obrigatório: o primeiro frame deve ser Hello".to_string(),
+            });
+            return Ok(None);
+        }
+    };
+
+    if !protocol_is_compatible(&protocol_version) {
+        let _ = out_tx.send(OutgoingFrame::VersionMismatch {
+            supported: IPC_PROTOCOL_VERSION.to_string(),
+            received: protocol_version,
+        });
+        return Ok(None);
+    }
+    if !valid_component_id(&component_id) {
+        let _ = out_tx.send(OutgoingFrame::Error {
+            error: "component_id inválido".to_string(),
+        });
+        return Ok(None);
+    }
+    let trusted = state
+        .security
+        .lock()
+        .expect("lock de security")
+        .is_trusted(&component_id);
+    let _ = out_tx.send(OutgoingFrame::Welcome {
+        protocol_version: IPC_PROTOCOL_VERSION.to_string(),
+        server_version: env!("CARGO_PKG_VERSION").to_string(),
+        component_id: component_id.clone(),
+        peer_uid: peer.uid,
+    });
+    info!(
+        component = "ipc",
+        component_id = %component_id,
+        trusted,
+        protocol_version = %protocol_version,
+        "handshake aceito"
+    );
+    Ok(Some(component_id))
+}
+
+fn valid_component_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
+fn read_frame_line(reader: &mut BufReader<UnixStream>) -> Result<Option<String>, String> {
+    loop {
+        let mut line = String::new();
+        let limit = (MAX_FRAME_BYTES + 2) as u64;
+        match reader.by_ref().take(limit).read_line(&mut line) {
+            Ok(0) => return Ok(None),
+            Ok(_) => {
+                let content = match line.strip_suffix('\n') {
+                    Some(content) => content.strip_suffix('\r').unwrap_or(content),
+                    None => return Err("frame sem terminador de linha".to_string()),
+                };
+                if content.len() > MAX_FRAME_BYTES {
+                    return Err("frame excede o limite de 1 MiB".to_string());
+                }
+                let trimmed = content.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                return Ok(Some(trimmed.to_string()));
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                return Err("timeout aguardando frame".to_string())
+            }
+            Err(error) if error.kind() == ErrorKind::TimedOut => {
+                return Err("timeout aguardando frame".to_string())
+            }
+            Err(error) => return Err(format!("leitura: {error}")),
+        }
+    }
+}
+
 fn handle_frame(
     frame: &IpcFrame,
+    state: &ServerState,
     client_id: &str,
-    bus: Arc<EventBus>,
-    fabric: Arc<EventFabric>,
-    health: Arc<HealthChecker>,
-    _security: Arc<Mutex<crate::security::SecurityGuard>>,
-    clients: Arc<Mutex<HashMap<String, ClientContext>>>,
-    handle: tokio::runtime::Handle,
-    out_tx: std::sync::mpsc::Sender<OutgoingFrame>,
+    out_tx: &std::sync::mpsc::Sender<OutgoingFrame>,
 ) -> Result<(), String> {
     match frame {
         IpcFrame::Event { event } => {
-            let dedup_window = 24 * 60 * 60; // 24h em segundos
-            handle
-                .block_on(fabric.emit(event.clone(), dedup_window))
-                .map_err(|e| e.to_string())?;
+            event
+                .validate_contract()
+                .map_err(|error| format!("evento inválido: {error}"))?;
+            state
+                .handle
+                .block_on(state.fabric.emit(event.clone(), DEDUP_WINDOW_SECONDS))
+                .map_err(|error| error.to_string())?;
             let _ = out_tx.send(OutgoingFrame::Ack {
                 ok: true,
                 event_id: Some(event.event_id.clone()),
@@ -250,13 +423,12 @@ fn handle_frame(
         IpcFrame::Subscribe { patterns } => {
             let mut ids = Vec::new();
             for pattern in patterns {
-                Pattern::new(pattern).map_err(|e| e.to_string())?;
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-                let id = handle.block_on(bus.subscribe(pattern, tx));
+                Pattern::new(pattern).map_err(|error| error.to_string())?;
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::unbounded_channel::<crate::events::types::Event>();
+                let id = state.handle.block_on(state.bus.subscribe(pattern, tx));
                 ids.push(id.clone());
 
-                // Confirma a assinatura antes de iniciar o forwarding, para que
-                // o cliente não receba Delivered no meio do handshake.
                 let _ = out_tx.send(OutgoingFrame::Subscribed { id });
 
                 let forward_tx = out_tx.clone();
@@ -268,40 +440,67 @@ fn handle_frame(
                     }
                 });
             }
-            {
-                let mut c = clients.lock().unwrap();
-                if let Some(ctx) = c.get_mut(client_id) {
-                    ctx.subscription_ids.extend(ids);
-                }
+            let mut clients = state.clients.lock().expect("lock de clients");
+            if let Some(context) = clients.get_mut(client_id) {
+                context.subscription_ids.extend(ids);
             }
             Ok(())
         }
         IpcFrame::Unsubscribe { id } => {
             {
-                let mut c = clients.lock().unwrap();
-                if let Some(ctx) = c.get_mut(client_id) {
-                    ctx.subscription_ids.retain(|x| x != id);
+                let mut clients = state.clients.lock().expect("lock de clients");
+                if let Some(context) = clients.get_mut(client_id) {
+                    context.subscription_ids.retain(|item| item != id);
                 }
             }
-            handle.block_on(bus.unsubscribe(id));
+            state.handle.block_on(state.bus.unsubscribe(id));
             Ok(())
         }
         IpcFrame::Health => {
-            let stats = health.check(None);
-            let _ = out_tx.send(OutgoingFrame::HealthResponse { status: stats });
+            let status = state.health.check(None);
+            let _ = out_tx.send(OutgoingFrame::HealthResponse {
+                status,
+                protocol_version: IPC_PROTOCOL_VERSION.to_string(),
+            });
             Ok(())
         }
-        IpcFrame::Ack { .. }
-        | IpcFrame::Subscribed { .. }
-        | IpcFrame::Delivered { .. }
-        | IpcFrame::Error { .. } => Ok(()),
+        IpcFrame::Authorize { request } => {
+            let result = state.gate.authorize_request(request, &state.approvals);
+            let _ = out_tx.send(OutgoingFrame::AuthorizationResponse { result });
+            Ok(())
+        }
+        IpcFrame::ApprovalRequest { request } => {
+            let approval = state
+                .approvals
+                .request(request, None)
+                .map_err(|error| error.to_string())?;
+            let _ = out_tx.send(OutgoingFrame::ApprovalResponse { approval });
+            Ok(())
+        }
+        IpcFrame::ApprovalDecision { decision } => {
+            let approval = state
+                .approvals
+                .decide(decision)
+                .map_err(|error| error.to_string())?;
+            let _ = out_tx.send(OutgoingFrame::ApprovalResponse { approval });
+            Ok(())
+        }
+        IpcFrame::ApprovalStatus { approval_id } => {
+            let approval = state
+                .approvals
+                .status(approval_id)
+                .map_err(|error| error.to_string())?;
+            let _ = out_tx.send(OutgoingFrame::ApprovalResponse { approval });
+            Ok(())
+        }
+        IpcFrame::Hello { .. } => Err("Hello só é válido no handshake".to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::types::Event;
+    use crate::contracts::{ApprovalDecision, ApprovalRequest, AuthorizationRequest};
     use crate::events::{EventBus, EventFabric, EventStore};
     use crate::health::check::HealthChecker;
     use crate::security::SecurityGuard;
@@ -311,15 +510,17 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    #[test]
-    fn outgoing_frame_serializes() {
-        let frame = OutgoingFrame::Ack {
-            ok: true,
-            event_id: Some("abc".to_string()),
-            error: None,
-        };
-        let json = serde_json::to_string(&frame).unwrap();
-        assert!(json.contains("Ack"));
+    fn build_server(socket_path: &std::path::Path) -> IpcServer {
+        let store = Arc::new(EventStore::open(":memory:").unwrap());
+        let bus = Arc::new(EventBus::new());
+        let fabric = Arc::new(EventFabric::new(Arc::clone(&store), Arc::clone(&bus)));
+        IpcServer::new(
+            socket_path.to_string_lossy().to_string(),
+            fabric,
+            Arc::new(HealthChecker::new("test".to_string())),
+            Arc::new(Mutex::new(SecurityGuard::new())),
+            tokio::runtime::Handle::current(),
+        )
     }
 
     fn send(stream: &mut UnixStream, value: Value) {
@@ -332,6 +533,32 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).expect("frame lido");
         serde_json::from_str(&line).expect("frame JSON")
+    }
+
+    fn hello_frame(version: &str, component_id: &str) -> Value {
+        json!({
+            "type": "Hello",
+            "body": {
+                "protocol_version": version,
+                "component_id": component_id,
+            }
+        })
+    }
+
+    fn connect(path: &std::path::Path) -> (UnixStream, BufReader<UnixStream>) {
+        let mut stream = UnixStream::connect(path).expect("conecta");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        send(
+            &mut stream,
+            hello_frame(IPC_PROTOCOL_VERSION, "python-runtime"),
+        );
+        let welcome = read(&mut reader);
+        assert_eq!(welcome["type"], "Welcome");
+        assert_eq!(welcome["body"]["protocol_version"], IPC_PROTOCOL_VERSION);
+        (stream, reader)
     }
 
     fn event_frame(event_id: &str) -> Value {
@@ -352,6 +579,184 @@ mod tests {
         })
     }
 
+    fn authorization_request(risk_level: &str) -> Value {
+        serde_json::to_value(AuthorizationRequest {
+            component_id: "python-runtime".to_string(),
+            tool_id: "sys.dangerous".to_string(),
+            params: json!({"args": []}),
+            task_id: "task-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            risk_level: risk_level.to_string(),
+            autonomy_level: 1,
+            required_autonomy: 1,
+            approval_id: None,
+            execution_mode: "HOST".to_string(),
+            access_level: "WRITE".to_string(),
+            policy_version: "1.0".to_string(),
+            required_capability: None,
+            fs_scope: "DEFAULT".to_string(),
+            net_scope: "NONE".to_string(),
+            resource_limits: "default".to_string(),
+            justification: "test".to_string(),
+        })
+        .unwrap()
+    }
+
+    fn authorize(
+        stream: &mut UnixStream,
+        reader: &mut BufReader<UnixStream>,
+        request: Value,
+    ) -> Value {
+        send(
+            stream,
+            json!({"type": "Authorize", "body": {"request": request}}),
+        );
+        let frame = read(reader);
+        assert_eq!(frame["type"], "AuthorizationResponse");
+        frame["body"]["result"].clone()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn handshake_is_mandatory_and_versioned() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-handshake.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut stream = UnixStream::connect(&path).expect("conecta");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            send(&mut stream, json!({"type": "Health"}));
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"].as_str().unwrap().contains("Hello"));
+        })
+        .await
+        .unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut stream = UnixStream::connect(&path).expect("conecta");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            send(&mut stream, hello_frame("2.0.0", "python-runtime"));
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "VersionMismatch");
+            assert_eq!(frame["body"]["supported"], IPC_PROTOCOL_VERSION);
+            assert_eq!(frame["body"]["received"], "2.0.0");
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn handshake_timeout_closes_idle_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-timeout.sock");
+        build_server(&socket_path)
+            .with_handshake_timeout(Duration::from_millis(100))
+            .spawn()
+            .unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let stream = UnixStream::connect(&path).expect("conecta");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .expect("frame de erro");
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"].as_str().unwrap().contains("timeout"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn oversized_and_unterminated_frames_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-frame-limit.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let oversized = format!("{}\n", "x".repeat(MAX_FRAME_BYTES + 1));
+            let handle = thread::spawn(move || {
+                let _ = writer.write_all(oversized.as_bytes());
+            });
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"].as_str().unwrap().contains("1 MiB"));
+            let _ = handle.join();
+        })
+        .await
+        .unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            stream.write_all(b"{\"type\":\"Health\"}").unwrap();
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .expect("half-close");
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("terminador"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peer_uid_mismatch_is_rejected_before_handshake() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-uid.sock");
+        let current = auth::current_uid();
+        let unexpected = if current == u32::MAX {
+            current - 1
+        } else {
+            current + 1
+        };
+        build_server(&socket_path)
+            .with_expected_uid(unexpected)
+            .spawn()
+            .unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let stream = UnixStream::connect(&path).expect("conecta");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .expect("frame de erro");
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"].as_str().unwrap().contains("UID"));
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn publish_subscribe_roundtrip_and_dedup() {
         let dir = tempfile::tempdir().unwrap();
@@ -370,11 +775,7 @@ mod tests {
 
         let path = socket_path.clone();
         let client = tokio::task::spawn_blocking(move || {
-            let mut stream = UnixStream::connect(&path).expect("conecta");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut stream, mut reader) = connect(&path);
 
             send(
                 &mut stream,
@@ -437,25 +838,11 @@ mod tests {
     async fn invalid_pattern_is_rejected_without_panicking() {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("nexus-test-invalid.sock");
-        let store = Arc::new(EventStore::open(":memory:").unwrap());
-        let bus = Arc::new(EventBus::new());
-        let fabric = Arc::new(EventFabric::new(store, bus));
-        let server = IpcServer::new(
-            socket_path.to_string_lossy().to_string(),
-            fabric,
-            Arc::new(HealthChecker::new("test".to_string())),
-            Arc::new(Mutex::new(SecurityGuard::new())),
-            tokio::runtime::Handle::current(),
-        );
-        server.spawn().unwrap();
+        build_server(&socket_path).spawn().unwrap();
 
         let path = socket_path.clone();
         tokio::task::spawn_blocking(move || {
-            let mut stream = UnixStream::connect(&path).expect("conecta");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut stream, mut reader) = connect(&path);
             send(
                 &mut stream,
                 json!({"type": "Subscribe", "body": {"patterns": ["UPPER"]}}),
@@ -469,5 +856,188 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn health_reports_protocol_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-health.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            send(&mut stream, json!({"type": "Health"}));
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "HealthResponse");
+            assert_eq!(frame["body"]["status"]["status"], "ok");
+            assert_eq!(frame["body"]["protocol_version"], IPC_PROTOCOL_VERSION);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn authorize_low_risk_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-authorize.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            let mut request = authorization_request("LOW");
+            request["access_level"] = json!("READ");
+            let result = authorize(&mut stream, &mut reader, request);
+            assert_eq!(result["decision"], "ALLOWED");
+            assert_eq!(result["approved"], true);
+            assert_eq!(result["execution_id"], result["request_id"]);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn authorize_high_risk_approval_flow_and_replay_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-approval.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            let request = authorization_request("HIGH");
+            let pending = authorize(&mut stream, &mut reader, request.clone());
+            assert_eq!(pending["decision"], "REQUIRES_APPROVAL");
+            assert_eq!(pending["approved"], false);
+            assert!(pending["execution_id"].is_null());
+            let approval_id = pending["metadata"]["approval_id"]
+                .as_str()
+                .expect("approval_id")
+                .to_string();
+
+            send(
+                &mut stream,
+                json!({
+                    "type": "ApprovalStatus",
+                    "body": {"approval_id": approval_id}
+                }),
+            );
+            let status = read(&mut reader);
+            assert_eq!(status["type"], "ApprovalResponse");
+            assert_eq!(status["body"]["approval"]["status"], "PENDING");
+
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+            send(
+                &mut stream,
+                json!({
+                    "type": "ApprovalDecision",
+                    "body": {
+                        "decision": {
+                            "approval_id": approval_id,
+                            "decision": "APPROVED",
+                            "approver": "operator",
+                            "timestamp": timestamp
+                        }
+                    }
+                }),
+            );
+            let decided = read(&mut reader);
+            assert_eq!(decided["type"], "ApprovalResponse");
+            assert_eq!(decided["body"]["approval"]["status"], "APPROVED");
+
+            let mut approved_request = request;
+            approved_request["approval_id"] = json!(approval_id);
+            let allowed = authorize(&mut stream, &mut reader, approved_request.clone());
+            assert_eq!(allowed["decision"], "ALLOWED");
+            assert_eq!(allowed["metadata"]["approval_status"], "CLAIMED");
+
+            let replay = authorize(&mut stream, &mut reader, approved_request);
+            assert_eq!(replay["decision"], "DENIED");
+            assert!(replay["reason"]
+                .as_str()
+                .unwrap()
+                .contains("approval verification failed"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn approval_request_command_rejects_non_ijson_params() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-approval-contract.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            let request = ApprovalRequest {
+                tool_id: "sys.dangerous".to_string(),
+                params: json!({"n": 9_007_199_254_740_992u64}),
+                task_id: "task-1".to_string(),
+                plan_id: "plan-1".to_string(),
+                execution_mode: "HOST".to_string(),
+                access_level: "WRITE".to_string(),
+                fs_scope: "DEFAULT".to_string(),
+                net_scope: "NONE".to_string(),
+                resource_limits: "default".to_string(),
+                policy_version: "1.0".to_string(),
+                justification: "test".to_string(),
+            };
+            send(
+                &mut stream,
+                json!({"type": "ApprovalRequest", "body": {"request": request}}),
+            );
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"].as_str().unwrap().contains("I-JSON"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn approval_decision_contract_is_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-approval-decision.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            let decision = ApprovalDecision {
+                approval_id: "missing".to_string(),
+                decision: "MAYBE".to_string(),
+                approver: "operator".to_string(),
+                timestamp: 1.0,
+            };
+            send(
+                &mut stream,
+                json!({"type": "ApprovalDecision", "body": {"decision": decision}}),
+            );
+            let frame = read(&mut reader);
+            assert_eq!(frame["type"], "Error");
+            assert!(frame["body"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("decision"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn outgoing_frame_serializes() {
+        let frame = OutgoingFrame::Ack {
+            ok: true,
+            event_id: Some("abc".to_string()),
+            error: None,
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        assert!(json.contains("Ack"));
     }
 }

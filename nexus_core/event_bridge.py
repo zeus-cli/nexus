@@ -1,13 +1,17 @@
 """Cliente UDS para a bridge de eventos Python ↔ Rust.
 
 O protocolo é o mesmo do daemon (`core/nexus-daemon/src/ipc/protocol.rs`):
-JSON por linha, com frames ``{"type": ..., "body": {...}}``. O evento em si
-segue o contrato v1.0.0 de ``contracts/schemas/event.schema.json`` e nunca
-transporta ``dedup_key`` (campo derivado).
+JSON por linha, com frames ``{"type": ..., "body": {...}}``. Toda conexão
+começa com ``Hello`` e exige ``Welcome`` compatível (major 1) antes de
+qualquer comando. O evento em si segue o contrato v1.0.0 de
+``contracts/schemas/event.schema.json`` e nunca transporta ``dedup_key``
+(campo derivado).
 
 O cliente é síncrono e destinado a testes de integração e a ferramentas
 operacionais. O runtime Python continua usando o ``EventBus`` em processo; o
-bridge é a fronteira explícita para o Control Plane.
+bridge é a fronteira explícita para o Control Plane e expõe comandos de
+controle (``authorize``, aprovação, ``health`` e ``event``), sem substituir a
+autoridade de segurança do Python.
 """
 
 from __future__ import annotations
@@ -25,6 +29,8 @@ from .contracts import event_from_wire, event_to_wire, validate_contract
 from .events import Event
 
 _MAX_FRAME_BYTES = 1_048_576
+IPC_PROTOCOL_VERSION = "1.0.0"
+_IPC_PROTOCOL_MAJOR = 1
 
 
 class BridgeError(RuntimeError):
@@ -39,11 +45,24 @@ class BridgeProtocolError(BridgeError):
     """Frame inválido ou conexão encerrada pelo daemon."""
 
 
+class BridgeVersionMismatch(BridgeError):
+    """O daemon rejeitou a versão do protocolo no handshake."""
+
+
+def _protocol_major(version: str) -> int | None:
+    major = version.split(".", 1)[0]
+    if not major.isdigit():
+        return None
+    return int(major)
+
+
 class RustEventBridge:
     """Cliente newline-JSON sobre Unix Domain Socket.
 
-    Cada instância mantém uma conexão. Para testar publicação e assinatura sem
-    intercalar ``Ack`` e ``Delivered``, use conexões separadas.
+    Cada instância mantém uma conexão. O primeiro frame é sempre ``Hello``
+    (versão do protocolo + component_id); o daemon responde ``Welcome`` ou
+    ``VersionMismatch``. Para testar publicação e assinatura sem intercalar
+    ``Ack`` e ``Delivered``, use conexões separadas.
     """
 
     def __init__(
@@ -52,19 +71,30 @@ class RustEventBridge:
         *,
         timeout: float = 5.0,
         max_frame_bytes: int = _MAX_FRAME_BYTES,
+        component_id: str = "python-runtime",
+        protocol_version: str = IPC_PROTOCOL_VERSION,
         logger: logging.Logger | None = None,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout deve ser positivo")
         if max_frame_bytes <= 0:
             raise ValueError("max_frame_bytes deve ser positivo")
+        if not component_id or any(ch.isspace() for ch in component_id):
+            raise ValueError("component_id deve ser não vazio e sem espaços")
+        if _protocol_major(protocol_version) != _IPC_PROTOCOL_MAJOR:
+            raise ValueError(
+                f"protocol_version incompatível: {protocol_version!r}"
+            )
         self._socket_path = Path(socket_path)
         self._timeout = timeout
         self._max_frame_bytes = max_frame_bytes
+        self._component_id = component_id
+        self._protocol_version = protocol_version
         self._logger = logger or logging.getLogger("zeus.event_bridge")
         self._socket: socket.socket | None = None
         self._buffer = b""
         self._pending: list[dict[str, Any]] = []
+        self._welcome: dict[str, Any] | None = None
         self._lock = threading.RLock()
 
     @property
@@ -74,6 +104,11 @@ class RustEventBridge:
     @property
     def connected(self) -> bool:
         return self._socket is not None
+
+    @property
+    def welcome(self) -> dict[str, Any] | None:
+        """Corpo do ``Welcome`` negociado, ou ``None`` antes do connect."""
+        return dict(self._welcome) if self._welcome is not None else None
 
     def connect(self) -> RustEventBridge:
         with self._lock:
@@ -93,7 +128,36 @@ class RustEventBridge:
             self._socket = sock
             self._buffer = b""
             self._pending = []
-            return self
+            self._welcome = None
+            try:
+                self._send(
+                    {
+                        "type": "Hello",
+                        "body": {
+                            "protocol_version": self._protocol_version,
+                            "component_id": self._component_id,
+                        },
+                    }
+                )
+                frame = self._read_until({"Welcome"}, timeout=self._timeout)
+                body = frame.get("body") or {}
+                received = body.get("protocol_version")
+                if not isinstance(received, str) or _protocol_major(received) != _IPC_PROTOCOL_MAJOR:
+                    raise BridgeProtocolError(
+                        f"Welcome com protocol_version incompatível: {received!r}"
+                    )
+                echoed = body.get("component_id")
+                if echoed != self._component_id:
+                    raise BridgeProtocolError(
+                        "Welcome com component_id diferente do Hello"
+                    )
+                if not isinstance(body.get("server_version"), str):
+                    raise BridgeProtocolError("Welcome sem server_version")
+                self._welcome = dict(body)
+                return self
+            except BaseException:
+                self.close()
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -177,10 +241,17 @@ class RustEventBridge:
         # descartados.
         for index, frame in enumerate(self._pending):
             kind = frame["type"]
+            body = frame.get("body") or {}
             if kind == "Error":
                 del self._pending[index]
-                body = frame.get("body") or {}
                 raise BridgeError(str(body.get("error", "erro não especificado")))
+            if kind == "VersionMismatch":
+                del self._pending[index]
+                raise BridgeVersionMismatch(
+                    "versão de protocolo incompatível: "
+                    f"daemon suporta {body.get('supported')!r}, "
+                    f"recebeu {body.get('received')!r}"
+                )
             if kind in expected:
                 del self._pending[index]
                 return frame
@@ -197,6 +268,12 @@ class RustEventBridge:
             body = frame.get("body") or {}
             if kind == "Error":
                 raise BridgeError(str(body.get("error", "erro não especificado")))
+            if kind == "VersionMismatch":
+                raise BridgeVersionMismatch(
+                    "versão de protocolo incompatível: "
+                    f"daemon suporta {body.get('supported')!r}, "
+                    f"recebeu {body.get('received')!r}"
+                )
             if kind in expected:
                 return frame
             self._pending.append(frame)
@@ -259,15 +336,106 @@ class RustEventBridge:
         with self._lock:
             self._send({"type": "Health"})
             frame = self._read_until({"HealthResponse"}, timeout=timeout)
-            status = (frame.get("body") or {}).get("status")
+            body = frame.get("body") or {}
+            version = body.get("protocol_version")
+            if not isinstance(version, str) or _protocol_major(version) != _IPC_PROTOCOL_MAJOR:
+                raise BridgeProtocolError(
+                    f"HealthResponse com protocol_version inválida: {version!r}"
+                )
+            status = body.get("status")
             if not isinstance(status, dict):
                 raise BridgeProtocolError("HealthResponse sem status")
             return status
 
+    def authorize(
+        self,
+        request: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Envia um ``authorization_request`` e retorna o resultado do gate.
+
+        O request é validado contra o schema v1.0.0 antes de sair do processo;
+        a resposta também é validada, de modo que uma divergência de contrato
+        entre Python e Rust falha explicitamente.
+        """
+        payload = dict(request)
+        validate_contract("authorization_request", payload)
+        with self._lock:
+            self._send({"type": "Authorize", "body": {"request": payload}})
+            frame = self._read_until({"AuthorizationResponse"}, timeout=timeout)
+            result = (frame.get("body") or {}).get("result")
+            if not isinstance(result, dict):
+                raise BridgeProtocolError("AuthorizationResponse sem result")
+            validate_contract("authorization_result", result)
+            return result
+
+    def approval_request(
+        self,
+        request: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Cria uma solicitação HITL e retorna o ``approval_record``."""
+        payload = dict(request)
+        validate_contract("approval_request", payload)
+        with self._lock:
+            self._send({"type": "ApprovalRequest", "body": {"request": payload}})
+            frame = self._read_until({"ApprovalResponse"}, timeout=timeout)
+            approval = (frame.get("body") or {}).get("approval")
+            if not isinstance(approval, dict):
+                raise BridgeProtocolError("ApprovalResponse sem approval")
+            validate_contract("approval_record", approval)
+            return approval
+
+    def approval_decide(
+        self,
+        decision: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Registra uma decisão humana e retorna o ``approval_record`` atualizado."""
+        payload = dict(decision)
+        validate_contract("approval_decision", payload)
+        with self._lock:
+            self._send({"type": "ApprovalDecision", "body": {"decision": payload}})
+            frame = self._read_until({"ApprovalResponse"}, timeout=timeout)
+            approval = (frame.get("body") or {}).get("approval")
+            if not isinstance(approval, dict):
+                raise BridgeProtocolError("ApprovalResponse sem approval")
+            validate_contract("approval_record", approval)
+            return approval
+
+    def approval_status(
+        self,
+        approval_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Consulta o estado de uma aprovação."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        with self._lock:
+            self._send(
+                {"type": "ApprovalStatus", "body": {"approval_id": approval_id}}
+            )
+            frame = self._read_until({"ApprovalResponse"}, timeout=timeout)
+            approval = (frame.get("body") or {}).get("approval")
+            if not isinstance(approval, dict):
+                raise BridgeProtocolError("ApprovalResponse sem approval")
+            validate_contract("approval_record", approval)
+            if approval.get("approval_id") != approval_id:
+                raise BridgeProtocolError(
+                    "ApprovalResponse com approval_id divergente"
+                )
+            return approval
+
 
 __all__ = [
+    "IPC_PROTOCOL_VERSION",
     "BridgeError",
     "BridgeProtocolError",
     "BridgeTimeout",
+    "BridgeVersionMismatch",
     "RustEventBridge",
 ]
