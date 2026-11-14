@@ -2,7 +2,7 @@
 
 NEXUS is a production-grade, local-first Cognitive OS for Linux designed to bridge the gap between LLM reasoning and secure system automation. It transforms a diagnostic agent into a cognitive system capable of perceiving, planning, and executing complex tasks with mandatory human authorization for high-risk operations.
 
-**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **305 tests passing (12 subtests)**, with hybrid semantic memory, a risk-based execution gate, event fabric with transactional outbox/dead-letter, distributed WebSocket networking, and hardware-isolated sandboxing.
+**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **381 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, event fabric with transactional outbox/dead-letter, distributed WebSocket networking, and hardware-isolated sandboxing.
 
 ## 🧠 Cognitive Architecture
 
@@ -32,7 +32,7 @@ NEXUS operates on a closed-loop cognitive cycle:
 NEXUS follows a **Fail-Closed** design philosophy:
 
 1. **Risk Classification**: Every tool is assigned a `RiskLevel` (LOW, MEDIUM, HIGH, CRITICAL).
-2. **The Execution Gate**: No tool is executed without passing through the `PolicyEngine`.
+2. **The Execution Gate**: No tool is executed without passing through identity, policy, risk and approval checks; authorized executions are closed with an audited `commit()`.
 3. **Cryptographic Binding**: Approvals are bound to a hash of the tool ID, parameters, task ID and scope, preventing "parameter swapping" attacks.
 4. **HITL Enforcement**: High-risk operations trigger a `TaskSuspended` state. The agent cannot approve its own actions. Expired approvals are rejected at claim time.
 5. **OS-Level Isolation**: Tools run in an unprivileged `bubblewrap` sandbox with restricted filesystem access, no network (unless specified), and strict CPU/RAM limits via `systemd-run`.
@@ -112,7 +112,7 @@ The `ApprovalAPI` allows humans to manage pending requests:
 NEXUS maintains a rigorous testing suite covering the entire security chain:
 
 ```bash
-# Run the full suite (305 tests, 12 subtests)
+# Run the full suite (381 tests, 12 subtests)
 pytest tests/
 
 # Verify the E2E HITL flow (Request -> Suspension -> Approval -> Execution)

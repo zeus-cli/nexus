@@ -25,6 +25,8 @@ from typing import Any
 from . import __version__
 from .approval import ApprovalManager
 from .automation import AutomationEngine
+from .execution_gate import ExecutionGate
+from .policy import PolicyEngine
 from .reflection import ReflectionEngine
 from .task_store import TaskStore
 from .agent_registry import AgentRegistry
@@ -76,6 +78,7 @@ class NexusRuntime:
     world_registry: Any = None
     scenario_manager: Any = None
     experiment_runner: Any = None
+    execution_gate: ExecutionGate | None = None
 
     async def aclose(self) -> None:
         """Close asynchronous provider clients and the SQLite connection."""
@@ -115,8 +118,18 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
     ensure_private_directory(config.paths.approvals_db.parent)
     ensure_private_file(config.paths.approvals_db)
     approvals = ApprovalManager(db_path=str(config.paths.approvals_db))
+    policy_engine = PolicyEngine()
+    execution_gate = ExecutionGate(
+        approval_manager=approvals,
+        policy_engine=policy_engine,
+        recorder=recorder,
+    )
     automation = AutomationEngine(
-        config.safety.autonomy_level, recorder, approval_manager=approvals
+        config.safety.autonomy_level,
+        recorder,
+        approval_manager=approvals,
+        policy_engine=policy_engine,
+        execution_gate=execution_gate,
     )
     reflection = ReflectionEngine(llm_gateway)
     task_store = TaskStore(str(config.paths.tasks_dir))
@@ -163,6 +176,7 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         world_registry=world_registry,
         scenario_manager=scenario_manager,
         experiment_runner=experiment_runner,
+        execution_gate=execution_gate,
     )
     logger.info(
         "runtime inicializado",

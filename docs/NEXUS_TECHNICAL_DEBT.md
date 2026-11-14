@@ -1,8 +1,8 @@
 # NEXUS Technical Debt
 
-**Versão:** 1.1
+**Versão:** 1.2
 **Projeto:** NEXUS — Cognitive Operating System
-**Atualizado:** 2026-11-12
+**Atualizado:** 2026-11-13
 
 Registro de dívida técnica conhecida, com prioridade, estado e próxima ação. Mantido como fonte da verdade para planejamento de refatoração.
 
@@ -159,30 +159,30 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 | Prioridade | Itens |
 |------------|-------|
 | P0 | TD-001, TD-010 (abertos); TD-002 (resolvido) |
-| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-015, TD-016, TD-018 (resolvido), TD-020 |
+| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020 |
 | P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019 |
 | P3 | TD-004 |
 | P4 | TD-006 (parcial) |
 
 ---
 
-## TD-015 — Integração do Execution Gate no Automation Engine (P1) — Open
+## TD-015 — Integração do Execution Gate no Automation Engine (P1) — RESOLVIDO (2026-11-13)
 
 **Descrição:** O `Automation Engine` existente ainda aplica policy e aprovação diretamente, sem passar pelo `Execution Gate` centralizado criado na Fase 3.
 
-**Impacto:** A autorização centralizada (identidade → capacidade → política → risco → aprovação → recurso → execução isolada → verificação → commit → auditoria) não é acionada automaticamente por todas as execuções de ferramenta.
+**Resolução:** `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine` e `ApprovalManager` do runtime e o injeta no `AutomationEngine`. `AutomationEngine.run()` chama `authorize()` antes de reivindicar/executar a aprovação e `commit()` registra o resultado real da execução. O caminho `gate.execute(runner=None)` foi removido; não há mais execução fantasma. Cobertura em `tests/test_e2e_execution_gate.py` e `tests/test_execution_gate.py`.
 
-**Próxima ação:** Adaptar o `AutomationEngine.run()` para consultar o `ExecutionGate` antes de executar, mantendo compatibilidade com o `ApprovalManager` existente.
+**Próxima ação:** substituir a autoridade Python pelo daemon Rust (T4–T6), mantendo a interface `authorize → executar → commit` e o fail-closed.
 
 ---
 
-## TD-016 — Parametrizar autonomy_level no Execution Gate (P1) — Open
+## TD-016 — Parametrizar autonomy_level no Execution Gate (P1) — RESOLVIDO (2026-11-13)
 
 **Descrição:** O `Execution Gate` da Fase 3 usa `autonomy_level=1` fixo na avaliação de política do `PolicyEngine`.
 
-**Impacto:** A decisão de política não reflete o nível de autonomia real do componente solicitante.
+**Resolução:** `authorize()` aceita `autonomy_level` e `required_autonomy`; o `AutomationEngine` repassa `config.safety.autonomy_level` e `tool.required_autonomy`. O classificador do gate usa a autonomia real e o escopo de escrita com a mesma semântica do `PolicyEngine` (LOW READ exige autonomia suficiente; LOW WRITE fora de `SAFE_ZONE` exige aprovação). Cobertura em `tests/test_execution_gate.py::test_gate_uses_real_autonomy_and_scope_for_low_risk`.
 
-**Próxima ação:** Aceitar `autonomy_level` como parâmetro da autorização e repassá ao `PolicyContext`.
+**Próxima ação:** manter a paridade de decisão quando a política migrar para o Rust (T5).
 
 ---
 

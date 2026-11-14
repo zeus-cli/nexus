@@ -149,6 +149,11 @@ class ExecutionGate:
         plan_id: str = "default",
         risk_level: RiskLevel = RiskLevel.LOW,
         autonomy_level: int = 1,
+        required_autonomy: int = 1,
+        approval_id: str | None = None,
+        execution_mode: str = "HOST",
+        access_level: str = "READ",
+        policy_version: str = "1.0",
         required_capability: str | None = None,
         fs_scope: str = "DEFAULT",
         net_scope: str = "NONE",
@@ -212,8 +217,14 @@ class ExecutionGate:
             task_context=task_id,
         )
         # Nota: PolicyEngine.evaluate recebe um Tool, não um risco direto.
-        # Aqui aplicamos classificação direta com base no risk_level informado.
-        decision, reason = self._classify_risk(policy_risk, context)
+        # Aqui aplicamos a mesma classificação determinística do PolicyEngine,
+        # incluindo autonomia real e escopo de escrita.
+        decision, reason = self._classify_risk(
+            policy_risk,
+            context,
+            access_level=access_level,
+            required_autonomy=required_autonomy,
+        )
 
         # 5. APPROVAL CHECK
         approval_required = decision == GateDecision.REQUIRES_APPROVAL
@@ -235,22 +246,81 @@ class ExecutionGate:
                 reason=reason,
             )
 
-        if approval_required:
-            # Cria solicitação de aprovação HITL.
-            req = ApprovalRequest(
-                tool_id=tool_id,
-                params=dict(params),
-                task_id=task_id,
-                plan_id=plan_id,
-                execution_mode="HOST",
-                access_level="READ",
-                fs_scope=fs_scope,
-                net_scope=net_scope,
-                resource_limits=resource_limits,
-                policy_version="1.0",
-                justification=justification or reason,
+        approval_req = ApprovalRequest(
+            tool_id=tool_id,
+            params=dict(params),
+            task_id=task_id,
+            plan_id=plan_id,
+            execution_mode=execution_mode,
+            access_level=access_level,
+            fs_scope=fs_scope,
+            net_scope=net_scope,
+            resource_limits=resource_limits,
+            policy_version=policy_version,
+            justification=justification or reason,
+        )
+
+        if approval_id is not None:
+            # O chamador já possui uma aprovação humana. Validamos o vínculo
+            # criptográfico e o estado antes de autorizar; não criamos outra.
+            if not self._approval_manager.verify_action(approval_id, approval_req):
+                await self._audit(
+                    "security.execution.approval_denied",
+                    {
+                        "request_id": request_id,
+                        "approval_id": approval_id,
+                        "component_id": component_id,
+                        "tool_id": tool_id,
+                        "risk": policy_risk,
+                        "reason": "approval hash mismatch",
+                        "stage": "approval_check",
+                    },
+                )
+                return GateResult(
+                    decision=GateDecision.DENIED,
+                    request_id=request_id,
+                    reason="approval verification failed",
+                )
+
+            approval_record = self._approval_manager.get_request(approval_id)
+            expires_at = (approval_record or {}).get("expires_at") or 0.0
+            if (
+                approval_record is None
+                or approval_record.get("status") != "APPROVED"
+                or float(expires_at) <= time.time()
+            ):
+                await self._audit(
+                    "security.execution.approval_denied",
+                    {
+                        "request_id": request_id,
+                        "approval_id": approval_id,
+                        "component_id": component_id,
+                        "tool_id": tool_id,
+                        "risk": policy_risk,
+                        "reason": "approval not available, expired or already consumed",
+                        "stage": "approval_check",
+                    },
+                )
+                return GateResult(
+                    decision=GateDecision.DENIED,
+                    request_id=request_id,
+                    reason="approval not available, expired or already consumed",
+                )
+
+            await self._audit(
+                "security.execution.approval_verified",
+                {
+                    "request_id": request_id,
+                    "approval_id": approval_id,
+                    "component_id": component_id,
+                    "tool_id": tool_id,
+                    "risk": policy_risk,
+                    "stage": "approval_check",
+                },
             )
-            rid = self._approval_manager.request_approval(req)
+        elif approval_required:
+            # Cria solicitação de aprovação HITL.
+            rid = self._approval_manager.request_approval(approval_req)
             # A execução precisa sobreviver à decisão humana para que o
             # chamador possa retomá-la com ``execute(request_id)``.
             self._executions[request_id] = {
@@ -301,6 +371,8 @@ class ExecutionGate:
             "task_id": task_id,
             "plan_id": plan_id,
             "status": "authorized",
+            "approval_id": approval_id,
+            "approval_managed_externally": approval_id is not None,
             "created_at": time.monotonic(),
             "risk_level": policy_risk,
         }
@@ -310,6 +382,7 @@ class ExecutionGate:
                 "request_id": request_id,
                 "component_id": component_id,
                 "tool_id": tool_id,
+                "approval_id": approval_id,
                 "risk": policy_risk,
                 "stage": "commit",
             },
@@ -409,6 +482,69 @@ class ExecutionGate:
             )
             raise
 
+    async def commit(
+        self,
+        request_id: str,
+        *,
+        result: Any = None,
+        success: bool = True,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Fecha o ciclo de uma execução autorizada que já foi realizada.
+
+        Diferente de ``execute()``, este método não dispara a operação. Ele
+        registra o resultado da ação executada pelo chamador (o
+        ``AutomationEngine``, por exemplo) sem simular uma segunda execução.
+
+        Execuções com aprovação pendente não podem ser commitadas: a
+        aprovação precisa ser reivindicada por ``execute()`` ou pelo fluxo
+        HITL do chamador, que é o responsável por consumi-la.
+        """
+        execution = self._executions.get(request_id)
+        if execution is None:
+            raise ExecutionGateError(
+                f"execution not found or not authorized: {request_id}"
+            )
+
+        status = execution["status"]
+        if status == "pending_approval":
+            raise ExecutionGateError(
+                f"execution {request_id} still requires approval; "
+                "claim the approval before committing"
+            )
+        if status not in ("authorized", "executing"):
+            raise ExecutionGateError(
+                f"execution {request_id} not in committable state: {status}"
+            )
+
+        execution["status"] = "completed" if success else "failed"
+        execution["result"] = result
+        execution["completed_at"] = time.monotonic()
+        if error:
+            execution["error"] = error
+
+        # Aprovações criadas pelo próprio gate são atualizadas aqui. Quando o
+        # chamador já trouxe uma aprovação, ele é o dono do ciclo de vida
+        # (claim/consumo) e não deve ser sobrescrito por este commit.
+        approval_id = execution.get("approval_id")
+        if approval_id and not execution.get("approval_managed_externally"):
+            self._approval_manager.update_execution_status(
+                approval_id,
+                ExecutionStatus.COMPLETED if success else ExecutionStatus.FAILED,
+                summary=(str(result) if result is not None else error or "")[:200],
+            )
+
+        await self._audit(
+            "security.execution.completed" if success else "security.execution.failed",
+            {
+                "request_id": request_id,
+                "tool_id": execution["tool_id"],
+                "stage": "commit",
+                **({"error": error[:512]} if error else {}),
+            },
+        )
+        return {"ok": success, "request_id": request_id, "result": result}
+
     # -- estágios internos --------------------------------------------------
 
     async def _verify_identity(self, component_id: str) -> bool:
@@ -441,7 +577,12 @@ class ExecutionGate:
         return True
 
     def _classify_risk(
-        self, risk_level: str, context: PolicyContext
+        self,
+        risk_level: str,
+        context: PolicyContext,
+        *,
+        access_level: str = "READ",
+        required_autonomy: int = 1,
     ) -> tuple[GateDecision, str]:
         """Classificação de risco determinística (independente de LLM)."""
         if risk_level == "CRITICAL":
@@ -451,7 +592,20 @@ class ExecutionGate:
         if risk_level == "MEDIUM":
             return GateDecision.REQUIRES_APPROVAL, "medium risk operations require human verification"
         if risk_level == "LOW":
-            return GateDecision.ALLOWED, "low risk operation permitted within approved scope"
+            if access_level == "WRITE" and context.fs_scope != "SAFE_ZONE":
+                return (
+                    GateDecision.REQUIRES_APPROVAL,
+                    "low risk write outside safe zone requires approval",
+                )
+            if context.autonomy_level >= required_autonomy:
+                return (
+                    GateDecision.ALLOWED,
+                    "low risk operation permitted within approved scope",
+                )
+            return (
+                GateDecision.REQUIRES_APPROVAL,
+                "insufficient autonomy for low-risk operation",
+            )
         return GateDecision.DENIED, "unknown risk level; denying by default"
 
     async def _reserve_resource(

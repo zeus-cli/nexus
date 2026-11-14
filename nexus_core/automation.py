@@ -17,7 +17,7 @@ from .sandbox import SandboxExecutor, SandboxResult
 from .approval import ApprovalManager, ApprovalRequest, ApprovalStatus, ExecutionStatus
 from .policy import PolicyEngine, PolicyContext, PolicyDecision
 from .automation_types import Tool, RiskLevel, AccessLevel, ExecutionMode
-from .execution_gate import ExecutionGate, GateDecision
+from .execution_gate import ExecutionGate, GateDecision, GateResult
 
 # Security Constants
 MAX_OUTPUT_BYTES = 16384
@@ -196,6 +196,11 @@ class AutomationEngine:
                 plan_id=plan_id,
                 risk_level=tool.risk,
                 autonomy_level=self._autonomy_level,
+                required_autonomy=tool.required_autonomy,
+                approval_id=approval_id,
+                execution_mode=tool.execution_mode.value,
+                access_level=tool.access.value,
+                policy_version=self._policy_engine.policy_version,
                 fs_scope=fs_scope,
                 net_scope=net_scope,
                 resource_limits=resource_limits,
@@ -274,11 +279,17 @@ class AutomationEngine:
             status = ExecutionStatus.COMPLETED if code == 0 else ExecutionStatus.FAILED
             
         except asyncio.CancelledError:
+            await self._commit_gate(
+                gate_result, tool_id=tool.id, success=False, error="cancelled"
+            )
             await self._record_terminal("automation.action.cancelled", tool, started, None)
             if effective_approval_id != "auto-allowed":
                 self._approval_manager.update_execution_status(effective_approval_id, ExecutionStatus.INTERRUPTED)
             raise
         except Exception as exc:
+            await self._commit_gate(
+                gate_result, tool_id=tool.id, success=False, error=type(exc).__name__
+            )
             await self._record_terminal("automation.action.failed", tool, started, type(exc).__name__)
             if effective_approval_id != "auto-allowed":
                 self._approval_manager.update_execution_status(effective_approval_id, ExecutionStatus.FAILED)
@@ -323,27 +334,57 @@ class AutomationEngine:
             )
         )
 
-        # 6. Execution Gate: mark execution as committed/consumed.
-        if self._execution_gate is not None and gate_result.execution_id is not None:
+        # 6. Execution Gate: register the result of the execution already done.
+        #    Never call gate.execute() here: that would simulate a second run.
+        await self._commit_gate(
+            gate_result,
+            tool_id=tool.id,
+            result=result.as_dict(),
+            success=code == 0,
+            error=None if code == 0 else f"exit code {code}",
+        )
+
+        return result
+
+    async def _commit_gate(
+        self,
+        gate_result: GateResult | None,
+        *,
+        tool_id: str,
+        result: Any = None,
+        success: bool = True,
+        error: str | None = None,
+    ) -> None:
+        """Fecha o ciclo do gate sem reexecutar a operação."""
+        if (
+            self._execution_gate is None
+            or gate_result is None
+            or gate_result.execution_id is None
+        ):
+            return
+        try:
+            await self._execution_gate.commit(
+                gate_result.execution_id,
+                result=result,
+                success=success,
+                error=error,
+            )
+        except Exception as exc:  # gate commit failure must not undo the action
             try:
-                await self._execution_gate.execute(
-                    gate_result.execution_id,
-                    runner=None,  # execution already performed above
-                )
-            except Exception:  # gate execution failure should not undo action
                 await self._recorder.record(
                     Event(
                         kind="automation.gate.commit_failed",
                         source="automation",
                         payload={
-                            "tool_id": tool.id,
+                            "tool_id": tool_id,
                             "gate_execution_id": gate_result.execution_id,
+                            "error": type(exc).__name__,
                         },
                         severity=Severity.WARNING,
                     )
                 )
-
-        return result
+            except Exception:
+                pass
 
     async def _record_terminal(
         self,

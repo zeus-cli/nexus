@@ -121,7 +121,7 @@ Componentes: World Builder, World Registry, Entity Manager, State Manager, Rules
 
 Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime, adaptadores (Filesystem, Process, Network, Browser, Application, API, Developer Tools).
 * Todas as operações do mundo real devem passar pelo Control Plane.
-* **Estado atual:** o `AutomationEngine` aplica `PolicyEngine`/`ApprovalManager` diretamente; o `ExecutionGate` centralizado é opcional e ainda não é injetado pelo bootstrap (TD-015).
+* **Estado atual:** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O gate é obrigatório no caminho do runtime Python; a autoridade ainda é Python e a migração para o daemon Rust é T4–T6 (TD-015 resolvido).
 
 **Componentes de Secure Agency da Fase 3 (implementados e testados):**
 
@@ -133,7 +133,7 @@ Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime
 | SudoBroker | `nexus_core/sudo_broker.py` | Mediação de execuções com privilégios elevados; aprovação vinculada à operação exata; proteção contra replay e parameter swapping |
 | Execution Journal | `nexus_core/execution_journal.py` | Journal imutável e auditável de execuções (SHA-256 integrity_hash por entrada) |
 
-O `Automation Engine` existente (`automation.py`) continua responsável pela execução de ferramentas com HITL, policy gating e sandbox bwrap; o Execution Gate pode ser consumido por ele para autorização centralizada.
+O `Automation Engine` (`automation.py`) executa as ferramentas com HITL, policy gating e sandbox bwrap. Ele consulta o `ExecutionGate` antes de qualquer execução e fecha o ciclo com `commit()`; o gate não reexecuta a operação. O ciclo `authorize → executar → commit` é o contrato que será mantido quando a autoridade migrar para o Rust.
 
 ### Distributed & Adaptive Plane
 Componentes: Node Manager, Distributed Resource Monitor, Distributed Task Scheduler, Experience Consolidation Engine, Self-Improvement Engine, **Integration Layer**.
@@ -225,6 +225,6 @@ A auditoria de 2026-11-12 corrigiu defeitos reais sem alterar os contratos públ
 | Frontend | Painel Segurança carrega aprovações pendentes e decide via `/approvals/{id}/decide` |
 | Configuração LLM | Cadeia local alinhada aos modelos Ollama realmente instalados (`nexusorbe-*`) |
 
-**Validação:** 305 testes + 12 subtests passando; `ruff`, `compileall`, `node --check` e `git diff --check` limpos.
+**Validação:** 381 testes + 12 subtests passando; `compileall`, `node --check` e `git diff --check` limpos. O `ruff` ainda reporta 440 achados pré-existentes, não tratados no T0.
 
 **Limitações atuais:** contexto remoto do Ollama fixo em 4096 tokens; Qwen3 é substancialmente mais lento que Gemma 4 no host remoto; o NEXUS não usa o Ollama remoto por exigir HTTPS e autorização explícita para provedores remotos.
