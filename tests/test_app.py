@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from nexus_core.app import bootstrap, health, serve
+from nexus_core.knowledge_engine import KnowledgeKind, KnowledgeSource
 
 
 class ServiceTest(unittest.TestCase):
@@ -43,7 +44,7 @@ class ServiceTest(unittest.TestCase):
     def test_bootstrap_creates_database_and_log(self) -> None:
         self.assertTrue(self.runtime.config.paths.database.is_file())
         self.assertTrue(self.runtime.config.paths.log_file.is_file())
-        self.assertEqual(self.runtime.database.schema_version(), 4)
+        self.assertEqual(self.runtime.database.schema_version(), 5)
 
     def test_health_reports_operational_state(self) -> None:
         report = health(self.runtime)
@@ -51,6 +52,27 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(report["autonomy"], {"level": 1, "name": "assistance"})
         self.assertEqual(report["database"]["integrity"], "ok")
         self.assertTrue(all(check["ok"] for check in report["checks"]))
+
+    def test_bootstrap_persists_knowledge_graph_and_wires_engine(self) -> None:
+        self.assertIsNotNone(self.runtime.knowledge_graph)
+        self.assertIs(self.runtime.cognitive._knowledge_engine, self.runtime.knowledge)
+        record = self.runtime.knowledge.add(
+            kind=KnowledgeKind.ASSUMPTION,
+            content="migration 5 keeps graph in the governed database",
+            source=KnowledgeSource.MODEL_INFERENCE,
+            confidence=0.7,
+        )
+        report = health(self.runtime)
+        self.assertEqual(report["knowledge_graph"]["nodes"], 1)
+        self.assertEqual(report["knowledge_graph"]["edges"], 0)
+        self.assertEqual(report["knowledge_graph"]["by_kind"]["ASSUMPTION"], 1)
+
+        self.runtime.close()
+        self.runtime = bootstrap(self.config_path, console_logs=False)
+        self.addCleanup(self.runtime.close)
+        persisted = self.runtime.knowledge.get(record.record_id)
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted.content, record.content)
 
     def test_serve_records_full_lifecycle(self) -> None:
         asyncio.run(serve(self.runtime, interval=0.01, iterations=2))

@@ -1,6 +1,6 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.3
+**Versão:** 1.4
 **Atualizado:** 2026-11-14
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
@@ -14,7 +14,7 @@ NEXUS é um sistema operacional cognitivo local-first organizado em seis planos 
 | Plano | Linguagem | Responsabilidade | Estado |
 |-------|-----------|------------------|--------|
 | **Control Plane** | Rust | Autoridade operacional: daemon, ciclo de vida, IPC, segurança determinística | **Parcial** (nexus-daemon v0.1.0 implementado; partes em Python) |
-| **Cognitive Plane** | Python | Interpretação de objetivos, raciocínio, plano, memória, roteamento de modelos | **Parcial** (nexus_core v0.2.0 + 6 motores cognitivos da Fase 2) |
+| **Cognitive Plane** | Python | Interpretação de objetivos, raciocínio, plano, memória, roteamento de modelos | **Parcial** (nexus_core v0.2.0 + 6 motores cognitivos da Fase 2 + Knowledge Graph persistente) |
 | **Intelligence Plane** | Python | Multi-agente: registry, runtime, orquestrador, colaboração, revisão adversária | **Implementado** (Fase 4) |
 | **Simulation Plane** | Python | Simulação universal: mundos, entidades, regras, clock, scheduler, cenários, experimentos, métricas, análise | **Parcial** (Fase 5: tipos base, clock, state manager, rules engine, event scheduler, world builder, scenario manager, metrics, analyzer, results store) |
 | **Execution Plane** | Python | Tool registry, automação, sandbox, adaptadores (FS/Process/Network/…) | **Parcial** (7 ferramentas de diagnóstico somente-leitura + Execution Gate, Tool Registry, Rollback Manager, SudoBroker, Execution Journal da Fase 3) |
@@ -36,6 +36,7 @@ NEXUS API (FastAPI) ─► NEXUS COGNITIVE CORE (Python)
       │                  ├ Policy Engine + Approval Manager (HITL, SHA-256)
       │                  ├ LLM Gateway (Ollama + OpenAI-compatível)
       │                  ├ Memory Store (SQLite + FTS5 + LanceDB)
+      │                  ├ Knowledge Graph (SQLite: nós, arestas, proveniência)
       │                  ├ Event Store + Event Bus (persistir antes de publicar)
       │                  ├ Sandbox (bwrap), Sentinel Receiver (UDS)
       │                  └ Task Store (tarefas suspensas, checksum SHA-256)
@@ -75,7 +76,8 @@ Componentes: Cognitive Core, Intent Engine, Context Engine, Reasoning Engine, Kn
 | Reasoning Engine | `nexus_core/reasoning_engine.py` | Raciocínio estruturado (decomposição, evidências, hipóteses, alternativas, incerteza, contradições) sem expor CoT privado |
 | Decision Engine | `nexus_core/decision_engine.py` | Comparação de decisões candidatas (evidência, risco, recursos, reversibilidade, confiança, aprovação humana) |
 | Planner Engine | `nexus_core/planner_engine.py` | Planos executáveis (ID, etapas, dependências, executor, ferramentas, recursos, risco, pré-condições, critérios de sucesso, falha, estado) |
-| Knowledge Engine | `nexus_core/knowledge_engine.py` | Conhecimento com proveniência (fato/suposição/hipótese/predição/simulação); nunca promove simulação a fato |
+| Knowledge Engine | `nexus_core/knowledge_engine.py` | Conhecimento com proveniência (fato/suposição/hipótese/predição/simulação); nunca promove simulação a fato; persiste via Knowledge Graph quando injetado |
+| Knowledge Graph | `nexus_core/knowledge_graph.py` | Nós e arestas em SQLite com proveniência, confiança, validade temporal, evidência de validação, busca e travessia BFS determinística; migração 5 |
 
 O `Cognitive Core` (`cognitive.py`) integra esses motores de forma opcional e não destrutiva: quando fornecidos, enriquecem o loop adaptativo; quando ausentes, o comportamento existente é preservado.
 * Loop: Perceber → Entender → Raciocinar → Simular → Planejar → Governar → Agir → Avaliar → Evoluir.
@@ -173,7 +175,7 @@ Componentes: Node Manager, Distributed Resource Monitor, Distributed Task Schedu
 | Validação | Pydantic |
 | Banco de dados | SQLite (WAL) |
 | Armazenamento vetorial | LanceDB |
-| Grafo de conhecimento | Modelo relacional (inicial) |
+| Grafo de conhecimento | SQLite relacional com nós, arestas, proveniência e confiança |
 | LLM local | Ollama / endpoints compatíveis |
 | Comunicação | UDS / WebSocket |
 | Sandbox | Bubblewrap / systemd isolation |
@@ -262,3 +264,45 @@ a produção. Esses itens pertencem ao T4–T6.
 **Validação:** 434 testes + 12 subtests Python; `cargo test` no daemon com 39
 testes. `compileall`, `node --check` e `git diff --check` limpos nos arquivos do
 T2; o `ruff` global continua com achados pré-existentes.
+
+---
+
+## 10. T3 — Knowledge Graph persistente (2026-11-14)
+
+O T3 tornou o conhecimento durável e consultável sem criar um segundo banco:
+
+* a migração 5 (`knowledge_graph`) cria `knowledge_nodes` e `knowledge_edges`
+  no mesmo SQLite governado do EventStore/outbox, com índices, FKs
+  `ON DELETE CASCADE` e `CHECK` de confiança;
+* cada nó/aresta carrega `kind`, `source`, `source_ref`, `confidence`,
+  `expires_at`, `validated_by`, `validation_evidence`, `properties` e
+  `metadata`; enums são persistidos pelo `.name`;
+* toda escrita valida identificadores, confiança em `[0,1]`, JSON com
+  `allow_nan=False`, timezone de `expires_at` e limites de consulta;
+* `list_nodes`/`list_edges` excluem expirados por padrão, `search_nodes`
+  ranqueia label/propriedades e `traverse` faz BFS determinística com prevenção
+  de ciclos e limite de profundidade;
+* `KnowledgeEngine(store=KnowledgeGraph)` persiste registros como nós
+  `knowledge_record`; sem store, o modo em memória continua intacto;
+* `SIMULATION` nunca é promovido a `FACT`: a promoção exige `validated_by`
+  explícito, registra evidência e recusa simulações;
+* o `bootstrap()` injeta o engine persistente no `CognitiveCore` e `health()`
+  publica contagens agregadas do grafo. Consultas HTTP/TUI ficam para o T12.
+
+**Fora do escopo do T3:** banco de grafo externo, versionamento de arestas,
+cache de travessia, endpoints de API e autoridade de segurança no Rust. O grafo
+é uma API Python interna; a API continua local e o gate continua em Python até
+o Control Plane (T4–T6).
+
+**Validação:** 461 testes + 12 subtests Python; `cargo test` no daemon
+permanece em 39 testes porque o T3 não alterou o Rust. `compileall`,
+`node --check` e `git diff --check` limpos nos arquivos do T3; o `ruff` global
+continua com achados pré-existentes.
+
+---
+
+## 11. Próximos passos do roadmap
+
+T4 — IPC de controle no daemon Rust: outbox/offsets duráveis, contratos de
+autorização em produção e claim transacional de consumidores. A autoridade de
+segurança só migra para o Control Plane depois disso (T5–T6).

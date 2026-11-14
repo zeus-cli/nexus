@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .knowledge_graph import GraphNode, KnowledgeGraph
 
 
 class KnowledgeKind(Enum):
@@ -101,11 +105,46 @@ class KnowledgeRecord:
         return datetime.now(timezone.utc) > datetime.fromisoformat(self.expires_at)
 
 
-class KnowledgeEngine:
-    """Gerencia registros de conhecimento com proveniência."""
+def _record_label(content: str) -> str:
+    """Rótulo curto e determinístico para um registro persistido como nó."""
+    line = " ".join(part.strip() for part in content.strip().splitlines() if part.strip())
+    return line[:200] or "knowledge_record"
 
-    def __init__(self) -> None:
+
+def _record_from_node(node: GraphNode) -> KnowledgeRecord:
+    content = node.properties.get("content", "")
+    return KnowledgeRecord(
+        record_id=node.node_id,
+        kind=node.kind,
+        content=str(content),
+        source=node.source,
+        source_ref=node.source_ref,
+        confidence=node.confidence,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+        expires_at=node.expires_at,
+        metadata=dict(node.metadata),
+        validated_by=node.validated_by,
+        validation_evidence=node.validation_evidence,
+    )
+
+
+class KnowledgeEngine:
+    """Gerencia registros de conhecimento com proveniência.
+
+    Com um :class:`~nexus_core.knowledge_graph.KnowledgeGraph` injetado, os
+    registros são nós persistentes (``node_type="knowledge_record"``) e
+    sobrevivem a reinícios. Sem grafo, o comportamento em memória é preservado
+    para usos isolados e testes.
+    """
+
+    def __init__(self, store: KnowledgeGraph | None = None) -> None:
+        self._store = store
         self._records: dict[str, KnowledgeRecord] = {}
+
+    @property
+    def store(self) -> KnowledgeGraph | None:
+        return self._store
 
     def add(
         self,
@@ -122,8 +161,27 @@ class KnowledgeEngine:
 
         Nunca promove automaticamente simulação ou suposição a fato.
         """
-        if not 0.0 <= confidence <= 1.0:
+        if not isinstance(content, str):
+            raise TypeError("content deve ser string")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            raise TypeError("confidence deve ser numérico")
+        confidence_value = float(confidence)
+        if not 0.0 <= confidence_value <= 1.0:
             raise ValueError("confidence deve estar entre 0.0 e 1.0")
+        if self._store is not None:
+            node = self._store.add_node(
+                "knowledge_record",
+                _record_label(content),
+                properties={"content": content},
+                kind=kind,
+                source=source,
+                source_ref=source_ref,
+                confidence=confidence_value,
+                expires_at=expires_at,
+                metadata=metadata,
+            )
+            return _record_from_node(node)
+
         record_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
         record = KnowledgeRecord(
@@ -132,7 +190,7 @@ class KnowledgeEngine:
             content=content,
             source=source,
             source_ref=source_ref,
-            confidence=confidence,
+            confidence=confidence_value,
             created_at=now,
             updated_at=now,
             expires_at=expires_at,
@@ -142,6 +200,11 @@ class KnowledgeEngine:
         return record
 
     def get(self, record_id: str) -> KnowledgeRecord | None:
+        if self._store is not None:
+            node = self._store.get_node(record_id)
+            if node is None or node.node_type != "knowledge_record":
+                return None
+            return _record_from_node(node)
         return self._records.get(record_id)
 
     def list(
@@ -152,6 +215,15 @@ class KnowledgeEngine:
         include_expired: bool = False,
         limit: int = 50,
     ) -> list[KnowledgeRecord]:
+        if self._store is not None:
+            nodes = self._store.list_nodes(
+                node_type="knowledge_record",
+                kind=kind,
+                source=source,
+                include_expired=include_expired,
+                limit=limit,
+            )
+            return [_record_from_node(node) for node in nodes]
         results = []
         for record in self._records.values():
             if kind is not None and record.kind != kind:
@@ -167,14 +239,19 @@ class KnowledgeEngine:
 
     def search(self, query: str, *, limit: int = 10) -> list[KnowledgeRecord]:
         """Busca simples por palavras-chave no conteúdo."""
-        terms = set(t for t in re.findall(r"[\w-]+", query.lower()) if len(t) > 2)
+        if self._store is not None:
+            nodes = self._store.search_nodes(
+                query, node_type="knowledge_record", limit=limit
+            )
+            return [_record_from_node(node) for node in nodes]
+        terms = {t for t in re.findall(r"[\w-]+", query.lower()) if len(t) > 2}
         scored = []
         for record in self._records.values():
             if record.is_expired():
                 continue
-            content_terms = set(
+            content_terms = {
                 t for t in re.findall(r"[\w-]+", record.content.lower()) if len(t) > 2
-            )
+            }
             overlap = len(terms & content_terms)
             if overlap > 0:
                 scored.append((overlap, record))
@@ -190,9 +267,16 @@ class KnowledgeEngine:
     ) -> bool:
         """Promove um registro a fato verificado.
 
-        Apenas registros com kind ASSUMPTION ou HYPOTHESIS podem ser promovidos.
-        Registros SIMULATION nunca são promovidos automaticamente a fato.
+        Registros SIMULATION nunca são promovidos a fato. A validação é sempre
+        explícita e exige quem validou; simulações permanecem simulações.
         """
+        if self._store is not None:
+            node = self._store.get_node(record_id)
+            if node is None or node.node_type != "knowledge_record":
+                return False
+            return self._store.promote_node_to_fact(
+                record_id, validated_by=validated_by, validation_evidence=evidence
+            )
         record = self._records.get(record_id)
         if record is None:
             return False
@@ -219,6 +303,11 @@ class KnowledgeEngine:
 
     def mark_simulation(self, record_id: str) -> bool:
         """Marca explicitamente um registro como saída de simulação."""
+        if self._store is not None:
+            node = self._store.get_node(record_id)
+            if node is None or node.node_type != "knowledge_record":
+                return False
+            return self._store.mark_node_as_simulation(record_id)
         record = self._records.get(record_id)
         if record is None:
             return False
@@ -244,13 +333,26 @@ class KnowledgeEngine:
         return True
 
     def delete(self, record_id: str) -> bool:
+        if self._store is not None:
+            node = self._store.get_node(record_id)
+            if node is None or node.node_type != "knowledge_record":
+                return False
+            return self._store.delete_node(record_id)
         if record_id in self._records:
             del self._records[record_id]
             return True
         return False
 
     def stats(self) -> dict[str, int]:
-        counts: dict[str, int] = {k.name: 0 for k in KnowledgeKind}
+        if self._store is not None:
+            node_stats = self._store.node_stats(node_type="knowledge_record")
+            counts: dict[str, int] = {
+                kind.name: int(node_stats["by_kind"].get(kind.name, 0))
+                for kind in KnowledgeKind
+            }
+            counts["total"] = int(node_stats["nodes"])
+            return counts
+        counts = {k.name: 0 for k in KnowledgeKind}
         for record in self._records.values():
             counts[record.kind.name] = counts.get(record.kind.name, 0) + 1
         counts["total"] = len(self._records)
@@ -259,7 +361,7 @@ class KnowledgeEngine:
 
 __all__ = [
     "KnowledgeEngine",
-    "KnowledgeRecord",
     "KnowledgeKind",
+    "KnowledgeRecord",
     "KnowledgeSource",
 ]

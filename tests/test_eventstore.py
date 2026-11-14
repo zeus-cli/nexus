@@ -36,7 +36,7 @@ class SchemaTest(StoreTestCase):
         self.assertEqual(mode.lower(), "wal")
 
     def test_migrations_are_idempotent(self) -> None:
-        self.assertEqual(self.database.schema_version(), 4)
+        self.assertEqual(self.database.schema_version(), 5)
         self.assertEqual(self.database.migrate(), [])
         self.assertEqual(self.database.pending_migrations(), [])
 
@@ -327,7 +327,7 @@ class MaintenanceTest(StoreTestCase):
         self.store.append(Event(kind="a.b", source="s", payload={"n": 1}))
         stats = self.store.stats()
         self.assertEqual(stats["total"], 1)
-        self.assertEqual(stats["schema_version"], 4)
+        self.assertEqual(stats["schema_version"], 5)
         self.assertIn("info", stats["by_severity"])
         json.dumps(stats)  # precisa ser serializável para o HUD/API
 

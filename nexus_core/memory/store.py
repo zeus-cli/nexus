@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..event_fabric_schema import EVENT_FABRIC_STATEMENTS
+from ..knowledge_schema import KNOWLEDGE_GRAPH_STATEMENTS
 from ..privatefs import ensure_private_file
 
 Migration = tuple[int, str, tuple[str, ...]]
@@ -48,6 +49,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         4,
         "event_fabric",
         EVENT_FABRIC_STATEMENTS,
+    ),
+    (
+        5,
+        "knowledge_graph",
+        KNOWLEDGE_GRAPH_STATEMENTS,
     ),
 )
 

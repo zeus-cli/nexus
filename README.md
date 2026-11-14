@@ -2,7 +2,7 @@
 
 NEXUS is a production-grade, local-first Cognitive OS for Linux designed to bridge the gap between LLM reasoning and secure system automation. It transforms a diagnostic agent into a cognitive system capable of perceiving, planning, and executing complex tasks with mandatory human authorization for high-risk operations.
 
-**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **434 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, versioned Python ↔ Rust contracts, a single Event Fabric with transactional outbox/dead-letter in the EventStore database, an idempotent consumer and a UDS bridge to the Rust daemon, distributed WebSocket networking, and hardware-isolated sandboxing.
+**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **461 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, versioned Python ↔ Rust contracts, a single Event Fabric with transactional outbox/dead-letter in the EventStore database, an idempotent consumer and a UDS bridge to the Rust daemon, a persistent knowledge graph with provenance/confidence in the same governed SQLite, distributed WebSocket networking, and hardware-isolated sandboxing.
 
 ## 🧠 Cognitive Architecture
 
@@ -21,6 +21,7 @@ NEXUS operates on a closed-loop cognitive cycle:
 | **Execution Gate** | Enforces identity → capability → policy → risk → approval → resource → execution → audit. | Python / Approval Manager |
 | **Sandbox Executor** | Isolates tool execution using namespace isolation and resource limits. | `bwrap` / Cgroups v2 |
 | **Hybrid Memory** | Combines lexical search (FTS5) and semantic search (LanceDB) using Reciprocal Rank Fusion. | SQLite / LanceDB |
+| **Knowledge Graph** | Persists nodes, edges, provenance, confidence and temporal validity in the governed SQLite; deterministic bounded traversal and no automatic simulation-to-fact promotion. | SQLite WAL |
 | **LLM Gateway** | Routes tasks across local/remote providers with retries, circuit breakers and context budgets. | Ollama / OpenAI-compatible |
 | **Event Fabric** | Persists events atomically with the EventStore, retries failed deliveries, dead-letters exhausted ones and exposes an idempotent-consumer/bridge boundary. | SQLite WAL / UDS / WebSocket |
 | **Shared Contracts** | Versioned JSON Schemas and fixtures validated by both Python and Rust. | JSON Schema 2020-12 / SHA-256 |
@@ -113,7 +114,7 @@ The `ApprovalAPI` allows humans to manage pending requests:
 NEXUS maintains a rigorous testing suite covering the entire security chain:
 
 ```bash
-# Run the full suite (434 tests, 12 subtests)
+# Run the full suite (461 tests, 12 subtests)
 pytest tests/
 
 # Verify the E2E HITL flow (Request -> Suspension -> Approval -> Execution)

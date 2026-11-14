@@ -1,6 +1,6 @@
 # NEXUS Engineering Roadmap
 
-**Updated:** 2026-11-12
+**Updated:** 2026-11-14
 
 Legend: `[x]` done, `[ ]` open/partial. Notes describe the real state.
 
@@ -16,6 +16,7 @@ Legend: `[x]` done, `[ ]` open/partial. Notes describe the real state.
 - [x] **Reflective Loop:** Reflection Engine with success/retry/replan/approval/abort decisions.
 - [x] **Sandbox Execution:** Bubblewrap-based isolated execution for safe tool usage.
 - [x] **Agent Coordination:** Agent Registry, Runtime, Dispatcher, Orchestrator, Collaboration and Adversarial Review.
+- [x] **Persistent Knowledge Graph:** SQLite graph in the governed database with nodes, edges, provenance, confidence, temporal validity, deterministic BFS traversal and no automatic simulation-to-fact promotion (T3).
 - [ ] **Execution Lifecycle:** Execution Gate, Tool Registry, Rollback, SudoBroker and Execution Journal are implemented, but the Automation catalog remains seven read-only diagnostics. Safe write actions are not yet exposed.
 
 ## P2 — AI & Memory Infrastructure (Knowledge)

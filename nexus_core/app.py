@@ -39,6 +39,8 @@ from .cognitive import CognitiveCore
 from .eventbus import EventBus
 from .event_fabric import EventFabric, TransactionalOutbox
 from .events import Event
+from .knowledge_engine import KnowledgeEngine
+from .knowledge_graph import KnowledgeGraph
 from .logging_setup import configure_logging, get_logger
 from .llm_router.gateway import LLMGateway
 from .memory.eventstore import EventStore
@@ -73,6 +75,9 @@ class NexusRuntime:
     resources: ResourceManager
     sentinel: SentinelReceiver | None = None
     fabric: EventFabric | None = None
+    # Fase 3 — Knowledge Graph persistente (opcional para runtimes parciais)
+    knowledge_graph: KnowledgeGraph | None = None
+    knowledge: KnowledgeEngine | None = None
     # Fase 4 — Multi-Agent Intelligence (opcionais)
     agent_registry: Any = None
     agent_runtime: Any = None
@@ -114,6 +119,8 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         query_limit=config.events.query_limit,
     )
     memory = MemoryStore(database, vector_dir=str(config.paths.data_dir / "vectors"))
+    knowledge_graph = KnowledgeGraph(database)
+    knowledge = KnowledgeEngine(store=knowledge_graph)
     bus = EventBus(logger=get_logger("eventbus"))
     outbox = TransactionalOutbox(database)
     fabric = EventFabric(
@@ -144,7 +151,7 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
     )
     reflection = ReflectionEngine(llm_gateway)
     task_store = TaskStore(str(config.paths.tasks_dir))
-    cognitive = CognitiveCore(llm_gateway, memory, recorder, automation, reflection, task_store)
+    cognitive = CognitiveCore(llm_gateway, memory, recorder, automation, reflection, task_store, knowledge_engine=knowledge)
 
     # Fase 4 — Multi-Agent Intelligence
     agent_registry = AgentRegistry()
@@ -189,6 +196,8 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         experiment_runner=experiment_runner,
         execution_gate=execution_gate,
         fabric=fabric,
+        knowledge_graph=knowledge_graph,
+        knowledge=knowledge,
     )
     logger.info(
         "runtime inicializado",
@@ -249,6 +258,17 @@ def health(runtime: NexusRuntime) -> dict[str, Any]:
             "usage": runtime.llm_gateway.usage(),
         },
         "bus": runtime.bus.stats.as_dict(),
+        "knowledge_graph": (
+            runtime.knowledge_graph.stats() if runtime.knowledge_graph else {
+                "nodes": 0,
+                "edges": 0,
+                "by_kind": {},
+                "by_source": {},
+                "by_node_type": {},
+                "edge_kinds": {},
+                "by_relation": {},
+            }
+        ),
         "event_fabric": (
             runtime.fabric.stats()
             if runtime.fabric
