@@ -5,7 +5,7 @@
 **Projeto:** NEXUS — Cognitive Operating System  
 **Escopo:** Registro de decisões arquiteturais (ADRs) — contexto, problema, alternativas, decisão, consequências, implicações de segurança e migração.
 
-> **Nota:** os ADRs 0001–0013 são registros históricos e preservam as contagens de testes da data original. O ADR 0014 consolida o endurecimento da auditoria de 2026-11-12. O ADR 0015 registra a ligação do Execution Gate ao runtime e o contrato `authorize → executar → commit` (T0). O ADR 0016 congela os contratos Python ↔ Rust v1.0.0 (T1).
+> **Nota:** os ADRs 0001–0013 são registros históricos e preservam as contagens de testes da data original. O ADR 0014 consolida o endurecimento da auditoria de 2026-11-12. O ADR 0015 registra a ligação do Execution Gate ao runtime e o contrato `authorize → executar → commit` (T0). O ADR 0016 congela os contratos Python ↔ Rust v1.0.0 (T1). O ADR 0017 torna o Event Fabric uma porta única, com outbox no mesmo SQLite do EventStore, consumidor idempotente e bridge IPC Python ↔ Rust (T2).
 
 ---
 
@@ -108,3 +108,4 @@ Control Plane funcional, independente de LLM. Sinais de SO não tratados (encerr
 | 0014 | Endurecimento pós-auditoria: SQLite, Event Fabric, VectorStore e CLI — Python | aceito |
 | 0015 | Execution Gate obrigatório no runtime e ciclo authorize → executar → commit — Python | aceito |
 | 0016 | Contratos Python ↔ Rust v1.0.0 (schemas, fixtures e hashes compartilhados) | aceito |
+| 0017 | Event Fabric único: outbox transacional, consumidor idempotente e bridge Python ↔ Rust (T2) | aceito |

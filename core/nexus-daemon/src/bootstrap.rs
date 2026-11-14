@@ -1,19 +1,22 @@
 use crate::config::Config;
-use crate::events::EventStore;
+use crate::events::{EventFabric, EventStore};
 use crate::health::check::HealthChecker;
-use crate::ipc::IpcServer;
 use crate::resources::monitor::ResourceMonitor;
 use crate::security::SecurityGuard;
 use crate::supervisor::Supervisor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::{error, info};
+use tracing::info;
 
 /// Contexto completo do runtime do daemon (espelho do `NexusRuntime` Python).
 pub struct DaemonRuntime {
     pub config: Config,
+    // Reservados para o T4 (outbox/offsets por assinante no Control Plane).
+    #[allow(dead_code)]
     pub store: Arc<EventStore>,
+    #[allow(dead_code)]
     pub bus: Arc<crate::events::EventBus>,
+    pub fabric: Arc<EventFabric>,
     pub health: Arc<HealthChecker>,
     pub supervisor: Arc<Supervisor>,
     pub security: Arc<Mutex<SecurityGuard>>,
@@ -22,7 +25,11 @@ pub struct DaemonRuntime {
 }
 
 impl DaemonRuntime {
-    pub fn health(&self, resource_stats: Option<&crate::resources::monitor::ResourceStats>) -> crate::health::check::HealthStatus {
+    #[allow(dead_code)] // usado por health checks futuros do Control Plane
+    pub fn health(
+        &self,
+        resource_stats: Option<&crate::resources::monitor::ResourceStats>,
+    ) -> crate::health::check::HealthStatus {
         self.health.check(resource_stats)
     }
 }
@@ -54,7 +61,9 @@ pub async fn bootstrap(config_path: &Path) -> Result<DaemonRuntime, BootstrapErr
     info!(component = "bootstrap", "logging estruturado inicializado");
 
     // 3. Event store (SQLite WAL)
-    let db_path = Path::new(&config.paths.data_dir).join("databases").join("nexus_daemon_events.db");
+    let db_path = Path::new(&config.paths.data_dir)
+        .join("databases")
+        .join("nexus_daemon_events.db");
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| BootstrapError::Io(e.to_string()))?;
     }
@@ -67,6 +76,8 @@ pub async fn bootstrap(config_path: &Path) -> Result<DaemonRuntime, BootstrapErr
 
     // 4. Barramento, health, supervisor, segurança
     let bus = Arc::new(crate::events::EventBus::new());
+    let store = Arc::new(store);
+    let fabric = Arc::new(EventFabric::new(Arc::clone(&store), Arc::clone(&bus)));
     let health = Arc::new(HealthChecker::new(env!("CARGO_PKG_VERSION").to_string()));
     let supervisor = Arc::new(Supervisor::new());
     let security = Arc::new(Mutex::new(SecurityGuard::new()));
@@ -81,8 +92,9 @@ pub async fn bootstrap(config_path: &Path) -> Result<DaemonRuntime, BootstrapErr
 
     Ok(DaemonRuntime {
         config,
-        store: Arc::new(store),
+        store,
         bus,
+        fabric,
         health,
         supervisor,
         security,

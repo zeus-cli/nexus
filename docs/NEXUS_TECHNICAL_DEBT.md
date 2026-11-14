@@ -160,7 +160,7 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 |------------|-------|
 | P0 | TD-001, TD-010 (abertos); TD-002 (resolvido) |
 | P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020 |
-| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019 |
+| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019, TD-021 |
 | P3 | TD-004 |
 | P4 | TD-006 (parcial) |
 
@@ -223,3 +223,26 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 **Impacto:** prompts, parâmetros e estado de tarefas podem ser lidos por processos do mesmo usuário.
 
 **Próxima ação:** derivar uma chave de `data/secrets/` ou de variável de ambiente e passá-la ao `TaskStore`; documentar migração de arquivos existentes.
+
+---
+
+## TD-021 — Limites do Event Fabric após o T2 (P2) — Open
+
+**Descrição:** O T2 fechou a atomicidade `EventStore + outbox` e adicionou
+consumidor idempotente, mas três fronteiras continuam deliberadamente abertas:
+
+1. o outbox durável e os offsets/acks por assinante ainda não existem no daemon
+   Rust — o `EventBus` é em memória e um cliente desconectado perde eventos;
+2. `IdempotentConsumer` garante efeito at-most-once apenas dentro de um processo;
+   múltiplos processos consumidores exigem claim transacional;
+3. a bridge UDS não tem autenticação/TLS própria; qualquer processo do mesmo
+   usuário pode publicar/assinar no socket.
+
+**Impacto:** entrega confiável no runtime Python atual, mas ainda não há
+durabilidade de assinatura no Control Plane nem isolamento entre processos
+locais não confiáveis.
+
+**Próxima ação:** implementar outbox/offsets no Rust e promover os contratos de
+autorização a produção no T4; introduzir claim transacional de consumidor e
+identidade de componente no IPC antes de mover o gate para o Control Plane
+(T5–T6). Não expor o socket remotamente até lá.

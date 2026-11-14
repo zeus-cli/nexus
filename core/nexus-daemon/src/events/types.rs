@@ -69,6 +69,7 @@ impl std::fmt::Display for Severity {
 /// campos são serializados com os mesmos nomes de chave para que Rust e
 /// Python troquem eventos via JSON sem perda de informação.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     pub event_id: String,
     pub kind: String,
@@ -259,5 +260,25 @@ mod tests {
         assert!(EventKind::new("Invalid Kind").is_err());
         assert!(EventKind::new("UPPER").is_err());
         assert!(EventKind::new("agent.task.started").is_ok());
+    }
+
+    #[test]
+    fn wire_rejects_derived_dedup_key() {
+        let json = serde_json::json!({
+            "event_id": "0123456789abcdef0123456789abcdef",
+            "kind": "system.started",
+            "source": "test",
+            "severity": "info",
+            "payload": {},
+            "correlation_id": null,
+            "created_at": "2026-11-14T12:00:00Z",
+            "dedup": true,
+            "dedup_key": "nao-deve-trafegar"
+        });
+        let error = serde_json::from_value::<Event>(json).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field"),
+            "dedup_key derivado não pode entrar no wire: {error}"
+        );
     }
 }

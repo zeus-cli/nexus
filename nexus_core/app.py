@@ -37,6 +37,7 @@ from .scenario_manager import ScenarioManager, ExperimentRunner
 from .config import AUTONOMY_LEVELS, Config, load_config
 from .cognitive import CognitiveCore
 from .eventbus import EventBus
+from .event_fabric import EventFabric, TransactionalOutbox
 from .events import Event
 from .logging_setup import configure_logging, get_logger
 from .llm_router.gateway import LLMGateway
@@ -71,6 +72,7 @@ class NexusRuntime:
     started_at: datetime
     resources: ResourceManager
     sentinel: SentinelReceiver | None = None
+    fabric: EventFabric | None = None
     # Fase 4 — Multi-Agent Intelligence (opcionais)
     agent_registry: Any = None
     agent_runtime: Any = None
@@ -113,7 +115,16 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
     )
     memory = MemoryStore(database, vector_dir=str(config.paths.data_dir / "vectors"))
     bus = EventBus(logger=get_logger("eventbus"))
-    recorder = EventRecorder(store, bus, logger=get_logger("recorder"))
+    outbox = TransactionalOutbox(database)
+    fabric = EventFabric(
+        store,
+        outbox,
+        sink=bus.publish,
+        logger=get_logger("event_fabric"),
+    )
+    recorder = EventRecorder(
+        store, bus, logger=get_logger("recorder"), fabric=fabric
+    )
     llm_gateway = LLMGateway(config.llm)
     ensure_private_directory(config.paths.approvals_db.parent)
     ensure_private_file(config.paths.approvals_db)
@@ -177,6 +188,7 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         scenario_manager=scenario_manager,
         experiment_runner=experiment_runner,
         execution_gate=execution_gate,
+        fabric=fabric,
     )
     logger.info(
         "runtime inicializado",
@@ -237,6 +249,16 @@ def health(runtime: NexusRuntime) -> dict[str, Any]:
             "usage": runtime.llm_gateway.usage(),
         },
         "bus": runtime.bus.stats.as_dict(),
+        "event_fabric": (
+            runtime.fabric.stats()
+            if runtime.fabric
+            else {
+                "running": False,
+                "total": 0,
+                "by_status": {},
+                "dead_letter": 0,
+            }
+        ),
         "log_file": str(config.paths.log_file),
         "checks": checks,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -279,6 +301,8 @@ async def serve(
         runtime.config.paths.data_dir / "run" / "sentinel.sock", runtime.recorder
     )
     try:
+        if runtime.fabric is not None:
+            runtime.fabric.start()
         await sentinel.start()
         runtime.sentinel = sentinel
         while iterations is None or count < iterations:
@@ -321,3 +345,5 @@ async def serve(
             "serviço encerrado",
             extra={"component": "service", "uptime_s": uptime, "cycles": count},
         )
+        if runtime.fabric is not None:
+            await runtime.fabric.stop()

@@ -1,6 +1,6 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.2
+**Versão:** 1.3
 **Atualizado:** 2026-11-14
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
@@ -50,7 +50,8 @@ NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 * supervisor de ciclo de vida de serviços;
  * health check, logging estruturado, configuração TOML estrita;
  * security guard, policy engine e execution gate mínimos (Fase 1);
- * contratos v1.0.0 compartilhados com o Python em `contracts/` (schemas, fixtures e vetores de hash), validados pelos dois lados.
+ * contratos v1.0.0 compartilhados com o Python em `contracts/` (schemas, fixtures e vetores de hash), validados pelos dois lados;
+ * Event Fabric com fachada única `store.append → bus.publish`, IPC com `Subscribe`/`Unsubscribe`/`Delivered`, dedup sem republicação e bridge UDS Python validando o contrato de evento antes do envio.
 
 ---
 
@@ -156,7 +157,7 @@ Componentes: Node Manager, Distributed Resource Monitor, Distributed Task Schedu
 | Experience Consolidation | `nexus_core/experience_consolidation.py` | Consolidação de experiências validadas, detecção de padrões, reuso |
 | Self-Improvement | `nexus_core/self_improvement.py` | Propostas de melhoria governadas; aprovação humana para políticas de segurança |
 | Integration Layer | `nexus_core/integration.py` | Conecta todos os componentes em fluxo cognitivo unificado (Intent → Plan → Decide → Execute → Experience → Improvement) |
-| Event Fabric (Outbox/Dead-Letter) | `nexus_core/event_fabric.py` | Transactional Outbox para persistência de eventos críticos; Dead-Letter Queue para eventos que falham repetidamente; retry com backoff exponencial |
+| Event Fabric (Outbox/Dead-Letter) | `nexus_core/event_fabric.py` | Outbox transacional no mesmo SQLite do EventStore (`append + enqueue` atômicos), retry com backoff, dead-letter com requeue preservando identidade, pump e consumidor idempotente; fachada Rust equivalente e bridge UDS Python ↔ Rust |
 | Distributed Network Server | `nexus_core/distributed_network.py` | Servidor WebSocket que aceita conexões de outros nós; propaga eventos entre nós |
 | Distributed Network Client | `nexus_core/distributed_network.py` | Cliente WebSocket que se conecta a nós remotos; broadcast de eventos; heartbeat remoto |
 
@@ -230,3 +231,34 @@ A auditoria de 2026-11-12 corrigiu defeitos reais sem alterar os contratos públ
 **Validação:** 410 testes + 12 subtests passando; `cargo test` no daemon com 34 testes (7 de contrato); `compileall`, `node --check` e `git diff --check` limpos. O `ruff` ainda reporta 440 achados pré-existentes, não tratados no T0/T1.
 
 **Limitações atuais:** contexto remoto do Ollama fixo em 4096 tokens; Qwen3 é substancialmente mais lento que Gemma 4 no host remoto; o NEXUS não usa o Ollama remoto por exigir HTTPS e autorização explícita para provedores remotos.
+
+---
+
+## 9. T2 — Event Fabric único (2026-11-14)
+
+O T2 fechou o risco de consistência entre EventStore e outbox:
+
+* migração 4 (`event_fabric`) cria `outbox`, `dead_letter` e
+  `consumer_processed` no mesmo SQLite do EventStore; `EventFabric.emit`
+  executa `append + enqueue` em uma única transação e faz rollback do evento se
+  o enqueue falhar;
+* falha de entrega agenda retry exponencial; após `max_attempts`, a entrada vai
+  para dead-letter e pode ser reenfileirada preservando `event_id` e
+  `entry_id`;
+* `IdempotentConsumer` grava o marcador só depois do handler bem-sucedido e
+  absorve duplicatas por `event_id` e `dedup_key`; a garantia é de efeito
+  at-most-once por consumidor no processo único atual;
+* no Rust, `EventFabric` é a única porta `store.append → bus.publish`; o IPC
+  implementa `Subscribe`/`Unsubscribe`/`Delivered` reais e o wire rejeita
+  campos desconhecidos;
+* a bridge `nexus_core/event_bridge.py` usa o mesmo protocolo newline-JSON do
+  daemon e valida o contrato de evento v1.0.0 antes de publicar.
+
+**Fora do escopo do T2:** outbox durável e offsets/acks por assinante no Rust
+(o barramento continua em memória), claim transacional de consumidores entre
+processos, autenticação/TLS na bridge e promoção dos contratos de autorização
+a produção. Esses itens pertencem ao T4–T6.
+
+**Validação:** 434 testes + 12 subtests Python; `cargo test` no daemon com 39
+testes. `compileall`, `node --check` e `git diff --check` limpos nos arquivos do
+T2; o `ruff` global continua com achados pré-existentes.

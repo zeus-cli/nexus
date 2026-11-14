@@ -1,6 +1,8 @@
 # ADR 0012 — Event Fabric: Transactional Outbox e Dead-Letter Queue (Fase 7+)
 
 > **Nota de atualização (2026-11-12):** decisão histórica preservada; as contagens de testes referem-se à data original. Estado atual e validação consolidados em `docs/adr/0014-endurecimento-auditoria-2026-11-12.md`.
+>
+> **Nota de atualização (2026-11-14):** o risco conhecido de dois bancos SQLite foi fechado no T2. A migração 4 (`docs/adr/0017-event-fabric-unico-t2.md`) move outbox, dead-letter e `consumer_processed` para o mesmo banco do EventStore, permitindo `append + enqueue` na mesma transação. O reenfileiramento também passou a preservar a identidade do fato (`event_id` e `entry_id`), em vez de gerar um novo `event_id`.
 
 - **Status:** aceito
 - **Data:** 2026-11-07

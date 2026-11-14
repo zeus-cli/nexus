@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..event_fabric_schema import EVENT_FABRIC_STATEMENTS
 from ..privatefs import ensure_private_file
 
 Migration = tuple[int, str, tuple[str, ...]]
@@ -42,6 +43,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         3,
         "add_privacy_level",
         ("ALTER TABLE memories ADD COLUMN privacy_level INTEGER NOT NULL DEFAULT 0",),
+    ),
+    (
+        4,
+        "event_fabric",
+        EVENT_FABRIC_STATEMENTS,
     ),
 )
 
