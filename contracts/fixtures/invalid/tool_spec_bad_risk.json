@@ -1,0 +1,16 @@
+{
+  "tool_id": "sys.uptime",
+  "version": "1.0",
+  "description": "Get system uptime",
+  "risk": "SEVERE",
+  "access": "READ",
+  "execution_mode": "HOST",
+  "idempotent": true,
+  "timeout_s": 10.0,
+  "input_schema": {},
+  "output_schema": {},
+  "required_capabilities": [],
+  "resource_limits": {},
+  "reversible": false,
+  "metadata": {}
+}

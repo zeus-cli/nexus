@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:approval_decision",
+  "title": "NEXUS Approval Decision v1",
+  "description": "Decisão humana sobre uma solicitação de aprovação.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approval_id", "decision", "approver", "timestamp"],
+  "properties": {
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decision": {
+      "enum": ["APPROVED", "DENIED"]
+    },
+    "approver": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "number"
+    }
+  }
+}

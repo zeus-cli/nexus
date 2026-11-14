@@ -1,0 +1,18 @@
+{
+  "event": {
+    "event_id": "0123456789abcdef0123456789abcdef",
+    "kind": "system.metrics",
+    "source": "nexus-daemon",
+    "severity": "info",
+    "payload": {
+      "small": 1e-7,
+      "big": 1e20,
+      "ratio": 0.1,
+      "text": "ação"
+    },
+    "correlation_id": null,
+    "created_at": "2026-11-13T12:00:00Z",
+    "dedup": true
+  },
+  "expected_dedup_key": "0c01448829e3aa8108e4f4d5f547ab26bd194d7e5fec5be1210012ae33eb7d25"
+}

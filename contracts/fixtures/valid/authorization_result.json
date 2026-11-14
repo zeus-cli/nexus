@@ -1,0 +1,8 @@
+{
+  "decision": "ALLOWED",
+  "request_id": "req-contract-1",
+  "reason": "low risk operation permitted within approved scope",
+  "approved": true,
+  "execution_id": "req-contract-1",
+  "metadata": {}
+}

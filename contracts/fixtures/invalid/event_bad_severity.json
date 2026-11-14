@@ -1,0 +1,10 @@
+{
+  "event_id": "0123456789abcdef0123456789abcdef",
+  "kind": "agent.task.started",
+  "source": "cognitive_core",
+  "severity": "fatal",
+  "payload": {},
+  "correlation_id": null,
+  "created_at": "2026-11-13T12:00:00Z",
+  "dedup": true
+}

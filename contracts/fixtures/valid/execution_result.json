@@ -1,0 +1,8 @@
+{
+  "tool_id": "sys.uptime",
+  "exit_code": 0,
+  "stdout": "up 1 day\n",
+  "stderr": "",
+  "duration_ms": 12,
+  "truncated": false
+}

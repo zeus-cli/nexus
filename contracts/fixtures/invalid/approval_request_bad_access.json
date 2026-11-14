@@ -1,0 +1,13 @@
+{
+  "tool_id": "sys.dangerous",
+  "params": {},
+  "task_id": "task-contract-1",
+  "plan_id": "plan-contract-1",
+  "execution_mode": "HOST",
+  "access_level": "ROOT",
+  "fs_scope": "DEFAULT",
+  "net_scope": "NONE",
+  "resource_limits": "default",
+  "policy_version": "1.0",
+  "justification": "invalid access level"
+}

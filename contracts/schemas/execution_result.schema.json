@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:execution_result",
+  "title": "NEXUS Execution Result v1",
+  "description": "Resultado de uma ferramenta executada pelo Automation Engine ou pelo gate Rust.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tool_id",
+    "exit_code",
+    "stdout",
+    "stderr",
+    "duration_ms",
+    "truncated"
+  ],
+  "properties": {
+    "tool_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "stdout": {
+      "type": "string"
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  }
+}

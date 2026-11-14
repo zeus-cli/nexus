@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:approval_record",
+  "title": "NEXUS Approval Record v1",
+  "description": "Registro persistido de aprovação HITL. params_hash é SHA-256 do approval_request canônico.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "approval_id",
+    "tool_id",
+    "params_hash",
+    "task_id",
+    "plan_id",
+    "execution_mode",
+    "access_level",
+    "fs_scope",
+    "net_scope",
+    "resource_limits",
+    "policy_version",
+    "justification",
+    "status",
+    "created_at",
+    "expires_at",
+    "decided_at",
+    "decided_by",
+    "consumed_at",
+    "risk_level"
+  ],
+  "properties": {
+    "approval_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tool_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "params_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_mode": {
+      "enum": ["HOST", "SANDBOX"]
+    },
+    "access_level": {
+      "enum": ["READ", "WRITE"]
+    },
+    "fs_scope": {
+      "type": ["string", "null"]
+    },
+    "net_scope": {
+      "type": ["string", "null"]
+    },
+    "resource_limits": {
+      "type": ["string", "null"]
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "justification": {
+      "type": ["string", "null"]
+    },
+    "status": {
+      "enum": [
+        "PENDING",
+        "APPROVED",
+        "DENIED",
+        "CLAIMED",
+        "CONSUMED",
+        "EXPIRED",
+        "REVOKED"
+      ]
+    },
+    "created_at": {
+      "type": "number"
+    },
+    "expires_at": {
+      "type": "number"
+    },
+    "decided_at": {
+      "type": ["number", "null"]
+    },
+    "decided_by": {
+      "type": ["string", "null"]
+    },
+    "consumed_at": {
+      "type": ["number", "null"]
+    },
+    "risk_level": {
+      "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL", null]
+    }
+  }
+}

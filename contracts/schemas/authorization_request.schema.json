@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:authorization_request",
+  "title": "NEXUS Authorization Request v1",
+  "description": "Entrada do Execution Gate. O request_id é gerado pelo gate e não faz parte da solicitação.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "component_id",
+    "tool_id",
+    "params",
+    "task_id",
+    "plan_id",
+    "risk_level",
+    "autonomy_level",
+    "required_autonomy",
+    "approval_id",
+    "execution_mode",
+    "access_level",
+    "policy_version",
+    "required_capability",
+    "fs_scope",
+    "net_scope",
+    "resource_limits",
+    "justification"
+  ],
+  "properties": {
+    "component_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tool_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {
+      "type": "object"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_level": {
+      "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    },
+    "autonomy_level": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4
+    },
+    "required_autonomy": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4
+    },
+    "approval_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "execution_mode": {
+      "enum": ["HOST", "SANDBOX"]
+    },
+    "access_level": {
+      "enum": ["READ", "WRITE"]
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_capability": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "fs_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "net_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resource_limits": {
+      "enum": ["default", "low", "medium", "high"]
+    },
+    "justification": {
+      "type": "string"
+    }
+  }
+}

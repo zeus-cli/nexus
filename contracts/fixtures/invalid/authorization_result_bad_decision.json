@@ -1,0 +1,8 @@
+{
+  "decision": "MAYBE",
+  "request_id": "req-contract-1",
+  "reason": "invalid decision",
+  "approved": false,
+  "execution_id": null,
+  "metadata": {}
+}

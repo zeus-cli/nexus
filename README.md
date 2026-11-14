@@ -2,7 +2,7 @@
 
 NEXUS is a production-grade, local-first Cognitive OS for Linux designed to bridge the gap between LLM reasoning and secure system automation. It transforms a diagnostic agent into a cognitive system capable of perceiving, planning, and executing complex tasks with mandatory human authorization for high-risk operations.
 
-**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **381 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, event fabric with transactional outbox/dead-letter, distributed WebSocket networking, and hardware-isolated sandboxing.
+**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **410 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, versioned Python ↔ Rust contracts, event fabric with transactional outbox/dead-letter, distributed WebSocket networking, and hardware-isolated sandboxing.
 
 ## 🧠 Cognitive Architecture
 
@@ -23,6 +23,7 @@ NEXUS operates on a closed-loop cognitive cycle:
 | **Hybrid Memory** | Combines lexical search (FTS5) and semantic search (LanceDB) using Reciprocal Rank Fusion. | SQLite / LanceDB |
 | **LLM Gateway** | Routes tasks across local/remote providers with retries, circuit breakers and context budgets. | Ollama / OpenAI-compatible |
 | **Event Fabric** | Persists events before publication and guarantees delivery with outbox and dead-letter queues. | SQLite WAL / WebSocket |
+| **Shared Contracts** | Versioned JSON Schemas and fixtures validated by both Python and Rust. | JSON Schema 2020-12 / SHA-256 |
 | **Task Store** | Persists suspended cognitive states with atomic writes and integrity checksums. | Hardened JSON / SHA-256 |
 | **Sentinel** | Low-level system observation and metric collection. | Rust / Unix Sockets |
 | **Web HUD** | Command Center, agents, simulations, memory, models and security panels. | HTML / CSS / JS |
@@ -112,7 +113,7 @@ The `ApprovalAPI` allows humans to manage pending requests:
 NEXUS maintains a rigorous testing suite covering the entire security chain:
 
 ```bash
-# Run the full suite (381 tests, 12 subtests)
+# Run the full suite (410 tests, 12 subtests)
 pytest tests/
 
 # Verify the E2E HITL flow (Request -> Suspension -> Approval -> Execution)

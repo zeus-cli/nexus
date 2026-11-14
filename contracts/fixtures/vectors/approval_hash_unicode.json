@@ -1,0 +1,19 @@
+{
+  "request": {
+    "tool_id": "sys.dangerous",
+    "params": {
+      "text": "ação",
+      "path": "/tmp/café.txt"
+    },
+    "task_id": "task-contract-unicode",
+    "plan_id": "plan-contract-1",
+    "execution_mode": "HOST",
+    "access_level": "WRITE",
+    "fs_scope": "DEFAULT",
+    "net_scope": "NONE",
+    "resource_limits": "default",
+    "policy_version": "1.0",
+    "justification": "unicode payload"
+  },
+  "expected_hash": "05b4ec866868fd06699f25488b5e772c787a08236fb850ea1d4909a992e8d300"
+}

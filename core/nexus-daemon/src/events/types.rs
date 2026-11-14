@@ -87,6 +87,33 @@ fn default_severity() -> String {
     "info".to_string()
 }
 
+/// Limite do domínio seguro de inteiros IEEE 754 / I-JSON.
+const IJSON_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// Verifica se o valor está no domínio I-JSON usado pelos hashes canônicos.
+///
+/// O Python (`rfc8785`) rejeita inteiros fora de ±(2^53−1) e números não
+/// finitos. O Rust precisa da mesma regra para não calcular um hash que o
+/// Python recusaria.
+pub(crate) fn is_ijson(value: &Value) -> bool {
+    match value {
+        Value::Number(number) => {
+            if let Some(value) = number.as_i64() {
+                value.unsigned_abs() <= IJSON_MAX_SAFE_INTEGER
+            } else if let Some(value) = number.as_u64() {
+                value <= IJSON_MAX_SAFE_INTEGER
+            } else if let Some(value) = number.as_f64() {
+                value.is_finite()
+            } else {
+                false
+            }
+        }
+        Value::Array(items) => items.iter().all(is_ijson),
+        Value::Object(map) => map.values().all(is_ijson),
+        _ => true,
+    }
+}
+
 impl Event {
     /// Cria um novo evento com identidade estável e timestamp UTC.
     pub fn new(
@@ -133,17 +160,20 @@ impl Event {
     }
 
     /// Chave de idempotência: SHA-256(kind, source, severity, payload canônico).
-    /// Mesma definição do Python (`dedup_key`).
+    /// Mesma definição do Python (`dedup_key`): payload em JSON canônico
+    /// RFC 8785 (JCS), campos unidos por U+001F e SHA-256 hexadecimal.
+    /// Payloads fora do domínio I-JSON não recebem chave.
     pub fn dedup_key(&self) -> Option<String> {
-        if !self.dedup {
+        if !self.dedup || !is_ijson(&self.payload) {
             return None;
         }
+        let canonical_payload = match serde_jcs::to_string(&self.payload) {
+            Ok(value) => value,
+            Err(_) => return None,
+        };
         let material = format!(
             "{}\x1f{}\x1f{}\x1f{}",
-            self.kind,
-            self.source,
-            self.severity,
-            serde_json::to_string(&self.payload).unwrap_or_default()
+            self.kind, self.source, self.severity, canonical_payload
         );
         let mut hasher = Sha256::new();
         hasher.update(material.as_bytes());

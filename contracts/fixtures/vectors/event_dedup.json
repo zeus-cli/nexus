@@ -1,0 +1,16 @@
+{
+  "event": {
+    "event_id": "0123456789abcdef0123456789abcdef",
+    "kind": "system.started",
+    "source": "nexus-daemon",
+    "severity": "info",
+    "payload": {
+      "pid": 1,
+      "mode": "test"
+    },
+    "correlation_id": null,
+    "created_at": "2026-11-13T12:00:00Z",
+    "dedup": true
+  },
+  "expected_dedup_key": "25da862c41539bc409492b532e0c543320b9e5410daa6109103146395d76a1c0"
+}

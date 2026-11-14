@@ -1,0 +1,21 @@
+{
+  "request": {
+    "tool_id": "sys.dangerous",
+    "params": {
+      "small": 1e-7,
+      "big": 1e20,
+      "ratio": 0.1,
+      "text": "ação"
+    },
+    "task_id": "task-contract-numbers",
+    "plan_id": "plan-contract-1",
+    "execution_mode": "HOST",
+    "access_level": "WRITE",
+    "fs_scope": "DEFAULT",
+    "net_scope": "NONE",
+    "resource_limits": "default",
+    "policy_version": "1.0",
+    "justification": "numeric payload"
+  },
+  "expected_hash": "4a99c0a0f24bb9c43314d74ee6e9ff61555cfc3424c2b9736d1d6b0c31713125"
+}

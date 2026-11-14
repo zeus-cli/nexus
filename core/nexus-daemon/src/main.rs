@@ -1,5 +1,7 @@
 mod bootstrap;
 mod config;
+#[cfg(test)]
+mod contracts;
 mod events;
 mod execution;
 mod health;

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:approval_request",
+  "title": "NEXUS Approval Request v1",
+  "description": "Solicitação HITL vinculada criptograficamente à operação exata.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tool_id",
+    "params",
+    "task_id",
+    "plan_id",
+    "execution_mode",
+    "access_level",
+    "fs_scope",
+    "net_scope",
+    "resource_limits",
+    "policy_version",
+    "justification"
+  ],
+  "properties": {
+    "tool_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {
+      "type": "object"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "execution_mode": {
+      "enum": ["HOST", "SANDBOX"]
+    },
+    "access_level": {
+      "enum": ["READ", "WRITE"]
+    },
+    "fs_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "net_scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resource_limits": {
+      "enum": ["default", "low", "medium", "high"]
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "justification": {
+      "type": "string"
+    }
+  }
+}

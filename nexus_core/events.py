@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Mapping
 
+import rfc8785
+
 KIND_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$")
 
 
@@ -68,7 +70,12 @@ class Event:
                 raise ValueError(f"severity inválida: {self.severity!r}") from exc
 
     def canonical_payload(self) -> str:
-        """JSON canônico (chaves ordenadas) usado para persistência e dedup."""
+        """JSON canônico (chaves ordenadas) usado para persistência.
+
+        Este formato preserva compatibilidade com payloads já persistidos e
+        aceita valores não-JSON via ``default=str``. O hash de deduplicação usa
+        ``dedup_key``, que aplica RFC 8785 para paridade Python ↔ Rust.
+        """
         return json.dumps(
             dict(self.payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
         )
@@ -77,11 +84,22 @@ class Event:
         return len(self.canonical_payload().encode("utf-8"))
 
     def dedup_key(self) -> str | None:
-        """Chave de idempotência, ou ``None`` quando o evento não é deduplicável."""
+        """Chave de idempotência, ou ``None`` quando o evento não é deduplicável.
+
+        O payload é serializado em JSON canônico RFC 8785 (JCS), com números no
+        domínio I-JSON. Payloads fora desse domínio não recebem chave (não são
+        deduplicados), espelhando o Rust. A mesma definição é implementada em
+        ``events::types::Event::dedup_key``; mudanças exigem nova versão do
+        contrato v1.
+        """
         if not self.dedup:
             return None
+        try:
+            canonical_payload = rfc8785.dumps(dict(self.payload)).decode("utf-8")
+        except (TypeError, ValueError):
+            return None
         material = "\x1f".join(
-            (self.kind, self.source, self.severity.value, self.canonical_payload())
+            (self.kind, self.source, self.severity.value, canonical_payload)
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 

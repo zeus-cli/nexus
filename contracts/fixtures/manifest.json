@@ -1,0 +1,31 @@
+{
+  "contract_version": "1.0.0",
+  "valid": [
+    { "schema": "event", "file": "valid/event.json" },
+    { "schema": "authorization_request", "file": "valid/authorization_request.json" },
+    { "schema": "authorization_result", "file": "valid/authorization_result.json" },
+    { "schema": "approval_request", "file": "valid/approval_request.json" },
+    { "schema": "approval_record", "file": "valid/approval_record.json" },
+    { "schema": "approval_decision", "file": "valid/approval_decision.json" },
+    { "schema": "execution_result", "file": "valid/execution_result.json" },
+    { "schema": "tool_spec", "file": "valid/tool_spec.json" }
+  ],
+  "invalid": [
+    { "schema": "event", "file": "invalid/event_bad_severity.json" },
+    { "schema": "event", "file": "invalid/event_bad_timestamp.json" },
+    { "schema": "authorization_request", "file": "invalid/authorization_request_bad_autonomy.json" },
+    { "schema": "authorization_result", "file": "invalid/authorization_result_bad_decision.json" },
+    { "schema": "approval_request", "file": "invalid/approval_request_bad_access.json" },
+    { "schema": "approval_record", "file": "invalid/approval_record_bad_hash.json" },
+    { "schema": "approval_decision", "file": "invalid/approval_decision_bad_decision.json" },
+    { "schema": "execution_result", "file": "invalid/execution_result_bad_exit_code.json" },
+    { "schema": "tool_spec", "file": "invalid/tool_spec_bad_risk.json" }
+  ],
+  "vectors": [
+    { "kind": "event_dedup", "file": "vectors/event_dedup.json" },
+    { "kind": "event_dedup", "file": "vectors/event_dedup_numbers.json" },
+    { "kind": "approval_hash", "file": "vectors/approval_hash.json" },
+    { "kind": "approval_hash", "file": "vectors/approval_hash_unicode.json" },
+    { "kind": "approval_hash", "file": "vectors/approval_hash_numbers.json" }
+  ]
+}

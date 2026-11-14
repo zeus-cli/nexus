@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:event",
+  "title": "NEXUS Event v1",
+  "description": "Evento canônico trocado entre Python, Rust e clientes locais. dedup_key é derivado e não trafega.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "kind",
+    "source",
+    "severity",
+    "payload",
+    "correlation_id",
+    "created_at",
+    "dedup"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S+$"
+    },
+    "severity": {
+      "enum": ["debug", "info", "warning", "error", "critical"]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "correlation_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "dedup": {
+      "type": "boolean"
+    }
+  }
+}

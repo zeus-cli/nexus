@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:nexus:contracts:v1:authorization_result",
+  "title": "NEXUS Authorization Result v1",
+  "description": "Decisão do Execution Gate. execution_id só existe quando a decisão é ALLOWED.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision",
+    "request_id",
+    "reason",
+    "approved",
+    "execution_id",
+    "metadata"
+  ],
+  "properties": {
+    "decision": {
+      "enum": ["ALLOWED", "REQUIRES_APPROVAL", "DENIED"]
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reason": {
+      "type": "string"
+    },
+    "approved": {
+      "type": "boolean"
+    },
+    "execution_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "metadata": {
+      "type": "object"
+    }
+  }
+}

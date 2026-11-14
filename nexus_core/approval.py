@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 import time
 import uuid
@@ -13,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+import rfc8785
 
 from .sqlite_utils import connect_db
 
@@ -56,6 +57,31 @@ class ApprovalDecision:
     timestamp: float = field(default_factory=time.time)
 
 DEFAULT_APPROVALS_DB = Path("data") / "databases" / "nexus_approvals.db"
+
+
+def approval_request_hash(req: ApprovalRequest) -> str:
+    """Hash canônico que vincula a aprovação à operação exata.
+
+    O algoritmo é um contrato Python ↔ Rust: JSON canônico RFC 8785 (JCS),
+    UTF-8, chaves ordenadas e números no domínio I-JSON, seguido de SHA-256
+    hexadecimal minúsculo. Alterar o payload ou a canonicalização exige nova
+    versão de contrato.
+    """
+    params_json = rfc8785.dumps(dict(req.params)).decode("utf-8")
+    payload = {
+        "tool_id": req.tool_id,
+        "params": params_json,
+        "task_id": req.task_id,
+        "plan_id": req.plan_id,
+        "execution_mode": req.execution_mode,
+        "access_level": req.access_level,
+        "fs_scope": req.fs_scope,
+        "net_scope": req.net_scope,
+        "resource_limits": req.resource_limits,
+        "policy_version": req.policy_version,
+    }
+    payload_json = rfc8785.dumps(payload)
+    return hashlib.sha256(payload_json).hexdigest()
 
 
 class ApprovalManager:
@@ -106,21 +132,7 @@ class ApprovalManager:
             conn.commit()
 
     def _canonicalize_and_hash(self, req: ApprovalRequest) -> str:
-        params_json = json.dumps(req.params, sort_keys=True, separators=(",", ":"))
-        payload = {
-            "tool_id": req.tool_id,
-            "params": params_json,
-            "task_id": req.task_id,
-            "plan_id": req.plan_id,
-            "execution_mode": req.execution_mode,
-            "access_level": req.access_level,
-            "fs_scope": req.fs_scope,
-            "net_scope": req.net_scope,
-            "resource_limits": req.resource_limits,
-            "policy_version": req.policy_version,
-        }
-        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload_json.encode()).hexdigest()
+        return approval_request_hash(req)
 
     def request_approval(self, req: ApprovalRequest, ttl_s: float = 3600.0) -> str:
         req_id = uuid.uuid4().hex

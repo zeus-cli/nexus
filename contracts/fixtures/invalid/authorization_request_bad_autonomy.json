@@ -1,0 +1,19 @@
+{
+  "component_id": "automation_engine",
+  "tool_id": "sys.dangerous",
+  "params": {},
+  "task_id": "task-contract-1",
+  "plan_id": "plan-contract-1",
+  "risk_level": "HIGH",
+  "autonomy_level": 5,
+  "required_autonomy": 1,
+  "approval_id": null,
+  "execution_mode": "HOST",
+  "access_level": "WRITE",
+  "policy_version": "1.0",
+  "required_capability": null,
+  "fs_scope": "DEFAULT",
+  "net_scope": "NONE",
+  "resource_limits": "default",
+  "justification": "invalid autonomy"
+}

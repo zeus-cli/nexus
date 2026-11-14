@@ -1,7 +1,7 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.1
-**Atualizado:** 2026-11-12
+**Versão:** 1.2
+**Atualizado:** 2026-11-14
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
 
@@ -49,7 +49,8 @@ NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 * servidor IPC sobre Unix Domain Socket (protocolo JSON por linha, compatível com o sentinel);
 * supervisor de ciclo de vida de serviços;
  * health check, logging estruturado, configuração TOML estrita;
- * security guard, policy engine e execution gate mínimos (Fase 1).
+ * security guard, policy engine e execution gate mínimos (Fase 1);
+ * contratos v1.0.0 compartilhados com o Python em `contracts/` (schemas, fixtures e vetores de hash), validados pelos dois lados.
 
 ---
 
@@ -59,6 +60,7 @@ NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 Componentes: Nexus Daemon, System Supervisor, Identity Manager, Policy Engine, Execution Gate, Permission Manager, Approval Manager, Security Guard, Resource Manager, Service Lifecycle Manager.
 * Não depende de LLM para segurança.
 * Decisões de autorização determinísticas, explícitas e verificáveis.
+* Contratos de wire v1.0.0 congelados em `contracts/` (evento, autorização, aprovação, resultado de execução e tool spec), com schemas JSON Schema 2020-12 e fixtures validados por Python e Rust. O módulo Rust de contratos é test-only até o IPC do T4.
 
 ### Cognitive Plane (Python)
 Componentes: Cognitive Core, Intent Engine, Context Engine, Reasoning Engine, Knowledge Engine, Decision Engine, Planner, Reflection Engine, LLM Router, Memory Manager.
@@ -225,6 +227,6 @@ A auditoria de 2026-11-12 corrigiu defeitos reais sem alterar os contratos públ
 | Frontend | Painel Segurança carrega aprovações pendentes e decide via `/approvals/{id}/decide` |
 | Configuração LLM | Cadeia local alinhada aos modelos Ollama realmente instalados (`nexusorbe-*`) |
 
-**Validação:** 381 testes + 12 subtests passando; `compileall`, `node --check` e `git diff --check` limpos. O `ruff` ainda reporta 440 achados pré-existentes, não tratados no T0.
+**Validação:** 410 testes + 12 subtests passando; `cargo test` no daemon com 34 testes (7 de contrato); `compileall`, `node --check` e `git diff --check` limpos. O `ruff` ainda reporta 440 achados pré-existentes, não tratados no T0/T1.
 
 **Limitações atuais:** contexto remoto do Ollama fixo em 4096 tokens; Qwen3 é substancialmente mais lento que Gemma 4 no host remoto; o NEXUS não usa o Ollama remoto por exigir HTTPS e autorização explícita para provedores remotos.
