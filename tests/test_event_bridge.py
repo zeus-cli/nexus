@@ -351,6 +351,8 @@ def test_fake_daemon_control_commands(tmp_path):
     approval_request = load_fixture("valid/approval_request.json")
     approval_record = load_fixture("valid/approval_record.json")
     approval_decision = load_fixture("valid/approval_decision.json")
+    revoked_record = dict(approval_record)
+    revoked_record["status"] = "REVOKED"
 
     def responder(frame: dict) -> list[dict]:
         if frame["type"] == "Authorize":
@@ -364,11 +366,17 @@ def test_fake_daemon_control_commands(tmp_path):
             "ApprovalRequest",
             "ApprovalDecision",
             "ApprovalStatus",
+            "ApprovalRevoke",
         ):
+            record = (
+                revoked_record
+                if frame["type"] == "ApprovalRevoke"
+                else approval_record
+            )
             return [
                 {
                     "type": "ApprovalResponse",
-                    "body": {"approval": approval_record},
+                    "body": {"approval": record},
                 }
             ]
         return []
@@ -390,6 +398,9 @@ def test_fake_daemon_control_commands(tmp_path):
         status = bridge.approval_status(approval_record["approval_id"])
         assert status["approval_id"] == approval_record["approval_id"]
 
+        revoked = bridge.approval_revoke(approval_record["approval_id"])
+        assert revoked["status"] == "REVOKED"
+
     frames = fake.frames()
     assert [frame["type"] for frame in frames] == [
         "Hello",
@@ -397,11 +408,13 @@ def test_fake_daemon_control_commands(tmp_path):
         "ApprovalRequest",
         "ApprovalDecision",
         "ApprovalStatus",
+        "ApprovalRevoke",
     ]
     assert frames[1]["body"]["request"] == authorization
     assert frames[2]["body"]["request"] == approval_request
     assert frames[3]["body"]["decision"] == approval_decision
     assert frames[4]["body"]["approval_id"] == approval_record["approval_id"]
+    assert frames[5]["body"]["approval_id"] == approval_record["approval_id"]
 
 
 def test_control_command_validates_contract_before_sending(tmp_path):
@@ -663,3 +676,17 @@ def test_real_daemon_authorize_approval_flow(rust_daemon):
             request("HIGH", params={"args": ["--safe"]}, approval_id=bound_id)
         )
         assert exact["decision"] == "ALLOWED"
+
+        # Revogação: uma aprovação revogada não pode ser reivindicada.
+        revoked_pending = bridge.authorize(request("HIGH"))
+        revoked_id = revoked_pending["metadata"]["approval_id"]
+        revoked = bridge.approval_revoke(revoked_id)
+        assert revoked["status"] == "REVOKED"
+        assert revoked["decided_at"] is None
+
+        blocked = bridge.authorize(request("HIGH", approval_id=revoked_id))
+        assert blocked["decision"] == "DENIED"
+        assert "approval verification failed" in blocked["reason"]
+
+        with pytest.raises(BridgeError):
+            bridge.approval_revoke(revoked_id)

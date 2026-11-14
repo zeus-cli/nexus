@@ -55,6 +55,8 @@ pub enum IpcFrame {
     ApprovalDecision { decision: ApprovalDecision },
     /// Cliente consulta o estado de uma aprovação.
     ApprovalStatus { approval_id: String },
+    /// Cliente revoga uma aprovação `PENDING` ou `APPROVED`.
+    ApprovalRevoke { approval_id: String },
 }
 
 /// Mensagem de saída direcionada a um cliente específico (envio pelo socket).

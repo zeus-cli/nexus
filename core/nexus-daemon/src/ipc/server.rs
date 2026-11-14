@@ -3,8 +3,9 @@
 //! O T4 adiciona ao barramento de eventos um plano de controle mínimo:
 //! handshake versionado, autenticação por `SO_PEERCRED`/UID, comandos
 //! `Authorize`, `ApprovalRequest`, `ApprovalDecision`, `ApprovalStatus`,
-//! `Health` e `Event`. A autoridade final continua no runtime Python até o
-//! T5/T6; aqui a decisão é determinística e fail-closed.
+//! `ApprovalRevoke`, `Health` e `Event`. O T5 fecha a paridade de policy e do
+//! ciclo de aprovação com o Python. A autoridade final continua no runtime
+//! Python até o T6; aqui a decisão é determinística e fail-closed.
 
 use super::auth::{self, PeerCredentials};
 use super::protocol::{
@@ -493,6 +494,14 @@ fn handle_frame(
             let _ = out_tx.send(OutgoingFrame::ApprovalResponse { approval });
             Ok(())
         }
+        IpcFrame::ApprovalRevoke { approval_id } => {
+            let approval = state
+                .approvals
+                .revoke(&approval_id)
+                .map_err(|error| error.to_string())?;
+            let _ = out_tx.send(OutgoingFrame::ApprovalResponse { approval });
+            Ok(())
+        }
         IpcFrame::Hello { .. } => Err("Hello só é válido no handshake".to_string()),
     }
 }
@@ -961,6 +970,87 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("approval verification failed"));
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn approval_revoke_blocks_decision_and_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nexus-test-approval-revoke.sock");
+        build_server(&socket_path).spawn().unwrap();
+
+        let path = socket_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, mut reader) = connect(&path);
+            let request = authorization_request("HIGH");
+            let pending = authorize(&mut stream, &mut reader, request.clone());
+            let approval_id = pending["metadata"]["approval_id"]
+                .as_str()
+                .expect("approval_id")
+                .to_string();
+
+            send(
+                &mut stream,
+                json!({
+                    "type": "ApprovalRevoke",
+                    "body": {"approval_id": approval_id}
+                }),
+            );
+            let revoked = read(&mut reader);
+            assert_eq!(revoked["type"], "ApprovalResponse");
+            assert_eq!(revoked["body"]["approval"]["status"], "REVOKED");
+
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+            send(
+                &mut stream,
+                json!({
+                    "type": "ApprovalDecision",
+                    "body": {
+                        "decision": {
+                            "approval_id": approval_id,
+                            "decision": "APPROVED",
+                            "approver": "operator",
+                            "timestamp": timestamp
+                        }
+                    }
+                }),
+            );
+            let rejected = read(&mut reader);
+            assert_eq!(rejected["type"], "Error");
+
+            send(
+                &mut stream,
+                json!({
+                    "type": "ApprovalStatus",
+                    "body": {"approval_id": approval_id}
+                }),
+            );
+            let status = read(&mut reader);
+            assert_eq!(status["body"]["approval"]["status"], "REVOKED");
+
+            let mut revoked_request = request;
+            revoked_request["approval_id"] = json!(approval_id);
+            let denied = authorize(&mut stream, &mut reader, revoked_request);
+            assert_eq!(denied["decision"], "DENIED");
+            assert!(denied["reason"]
+                .as_str()
+                .unwrap()
+                .contains("approval verification failed"));
+
+            send(
+                &mut stream,
+                json!({
+                    "type": "ApprovalRevoke",
+                    "body": {"approval_id": "missing"}
+                }),
+            );
+            let missing = read(&mut reader);
+            assert_eq!(missing["type"], "Error");
         })
         .await
         .unwrap();

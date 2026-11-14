@@ -17,7 +17,8 @@ Legend: `[x]` done, `[ ]` open/partial. Notes describe the real state.
 - [x] **Sandbox Execution:** Bubblewrap-based isolated execution for safe tool usage.
 - [x] **Agent Coordination:** Agent Registry, Runtime, Dispatcher, Orchestrator, Collaboration and Adversarial Review.
 - [x] **Persistent Knowledge Graph:** SQLite graph in the governed database with nodes, edges, provenance, confidence, temporal validity, deterministic BFS traversal and no automatic simulation-to-fact promotion (T3).
-- [x] **Control Plane IPC:** versioned `Hello`/`Welcome` handshake, local `SO_PEERCRED`/UID authentication, `0600` socket, timeouts, frame limits and `authorize`/approval/`health`/`event` commands in the Rust daemon (T4). Final security authority remains in Python until T5/T6.
+- [x] **Control Plane IPC:** versioned `Hello`/`Welcome` handshake, local `SO_PEERCRED`/UID authentication, `0600` socket, timeouts, frame limits and `authorize`/approval/`health`/`event` commands in the Rust daemon (T4). Final security authority remains in Python until T6.
+- [x] **Control Plane Parity:** Policy Engine and Approval Manager in Rust mirror Python decisions with shared fixtures, revocation, per-request TTL, `verify_action`, single-use claim and `CLAIMED → CONSUMED` (T5). Approvals remain in memory; durable persistence and final authority belong to T6.
 - [ ] **Execution Lifecycle:** Execution Gate, Tool Registry, Rollback, SudoBroker and Execution Journal are implemented, but the Automation catalog remains seven read-only diagnostics. Safe write actions are not yet exposed.
 
 ## P2 — AI & Memory Infrastructure (Knowledge)

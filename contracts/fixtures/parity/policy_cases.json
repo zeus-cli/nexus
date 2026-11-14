@@ -1,0 +1,107 @@
+{
+  "contract_version": "1.0.0",
+  "source": "nexus_core/policy.py::PolicyEngine.evaluate and nexus_core/execution_gate.py::ExecutionGate._classify_risk",
+  "description": "Casos normativos de paridade. policy_decision usa os nomes do PolicyEngine Python (ALLOW/REQUIRE_APPROVAL/DENY); gate_decision usa os nomes do ExecutionGate (ALLOWED/REQUIRES_APPROVAL/DENIED). A regra de escrita LOW em SAFE_ZONE difere por desenho: o PolicyEngine permite, o ExecutionGate ainda exige autonomia.",
+  "cases": [
+    {
+      "name": "critical_read",
+      "risk_level": "CRITICAL",
+      "access_level": "READ",
+      "fs_scope": "SAFE_ZONE",
+      "autonomy_level": 4,
+      "required_autonomy": 1,
+      "policy_decision": "DENY",
+      "gate_decision": "DENIED"
+    },
+    {
+      "name": "high_write",
+      "risk_level": "HIGH",
+      "access_level": "WRITE",
+      "fs_scope": "DEFAULT",
+      "autonomy_level": 4,
+      "required_autonomy": 1,
+      "policy_decision": "REQUIRE_APPROVAL",
+      "gate_decision": "REQUIRES_APPROVAL"
+    },
+    {
+      "name": "medium_read",
+      "risk_level": "MEDIUM",
+      "access_level": "READ",
+      "fs_scope": "SAFE_ZONE",
+      "autonomy_level": 4,
+      "required_autonomy": 1,
+      "policy_decision": "REQUIRE_APPROVAL",
+      "gate_decision": "REQUIRES_APPROVAL"
+    },
+    {
+      "name": "low_read_allowed",
+      "risk_level": "LOW",
+      "access_level": "READ",
+      "fs_scope": "DEFAULT",
+      "autonomy_level": 1,
+      "required_autonomy": 1,
+      "policy_decision": "ALLOW",
+      "gate_decision": "ALLOWED"
+    },
+    {
+      "name": "low_read_high_autonomy",
+      "risk_level": "LOW",
+      "access_level": "READ",
+      "fs_scope": "DEFAULT",
+      "autonomy_level": 4,
+      "required_autonomy": 2,
+      "policy_decision": "ALLOW",
+      "gate_decision": "ALLOWED"
+    },
+    {
+      "name": "low_read_insufficient_autonomy",
+      "risk_level": "LOW",
+      "access_level": "READ",
+      "fs_scope": "DEFAULT",
+      "autonomy_level": 0,
+      "required_autonomy": 1,
+      "policy_decision": "REQUIRE_APPROVAL",
+      "gate_decision": "REQUIRES_APPROVAL"
+    },
+    {
+      "name": "low_write_safe_zone_policy_allows",
+      "risk_level": "LOW",
+      "access_level": "WRITE",
+      "fs_scope": "SAFE_ZONE",
+      "autonomy_level": 0,
+      "required_autonomy": 2,
+      "policy_decision": "ALLOW",
+      "gate_decision": "REQUIRES_APPROVAL"
+    },
+    {
+      "name": "low_write_safe_zone_allowed",
+      "risk_level": "LOW",
+      "access_level": "WRITE",
+      "fs_scope": "SAFE_ZONE",
+      "autonomy_level": 2,
+      "required_autonomy": 2,
+      "policy_decision": "ALLOW",
+      "gate_decision": "ALLOWED"
+    },
+    {
+      "name": "low_write_outside_safe_zone",
+      "risk_level": "LOW",
+      "access_level": "WRITE",
+      "fs_scope": "DEFAULT",
+      "autonomy_level": 4,
+      "required_autonomy": 1,
+      "policy_decision": "REQUIRE_APPROVAL",
+      "gate_decision": "REQUIRES_APPROVAL"
+    },
+    {
+      "name": "low_write_outside_safe_zone_insufficient",
+      "risk_level": "LOW",
+      "access_level": "WRITE",
+      "fs_scope": "DEFAULT",
+      "autonomy_level": 0,
+      "required_autonomy": 2,
+      "policy_decision": "REQUIRE_APPROVAL",
+      "gate_decision": "REQUIRES_APPROVAL"
+    }
+  ]
+}

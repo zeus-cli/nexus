@@ -430,6 +430,34 @@ class RustEventBridge:
                 )
             return approval
 
+    def approval_revoke(
+        self,
+        approval_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Revoga uma aprovação PENDING/APPROVED e retorna o registro atualizado."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        with self._lock:
+            self._send(
+                {"type": "ApprovalRevoke", "body": {"approval_id": approval_id}}
+            )
+            frame = self._read_until({"ApprovalResponse"}, timeout=timeout)
+            approval = (frame.get("body") or {}).get("approval")
+            if not isinstance(approval, dict):
+                raise BridgeProtocolError("ApprovalResponse sem approval")
+            validate_contract("approval_record", approval)
+            if approval.get("approval_id") != approval_id:
+                raise BridgeProtocolError(
+                    "ApprovalResponse com approval_id divergente"
+                )
+            if approval.get("status") != "REVOKED":
+                raise BridgeProtocolError(
+                    f"ApprovalResponse com status inesperado: {approval.get('status')!r}"
+                )
+            return approval
+
 
 __all__ = [
     "IPC_PROTOCOL_VERSION",

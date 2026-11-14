@@ -159,7 +159,7 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 | Prioridade | Itens |
 |------------|-------|
 | P0 | TD-001, TD-010 (abertos); TD-002 (resolvido) |
-| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020 |
+| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020, TD-022 |
 | P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019, TD-021 (parcial) |
 | P3 | TD-004 |
 | P4 | TD-006 (parcial) |
@@ -172,7 +172,7 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 **Resolução:** `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine` e `ApprovalManager` do runtime e o injeta no `AutomationEngine`. `AutomationEngine.run()` chama `authorize()` antes de reivindicar/executar a aprovação e `commit()` registra o resultado real da execução. O caminho `gate.execute(runner=None)` foi removido; não há mais execução fantasma. Cobertura em `tests/test_e2e_execution_gate.py` e `tests/test_execution_gate.py`.
 
-**Próxima ação:** substituir a autoridade Python pelo daemon Rust (T5–T6), mantendo a interface `authorize → executar → commit` e o fail-closed. O T4 entregou a superfície de controle local, mas não moveu a autoridade final.
+**Próxima ação:** substituir a autoridade Python pelo daemon Rust (T6), mantendo a interface `authorize → executar → commit` e o fail-closed. O T4 entregou a superfície de controle local e o T5 a paridade de policy/aprovação, mas nenhum dos dois moveu a autoridade final.
 
 ---
 
@@ -226,11 +226,12 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-021 — Limites do Event Fabric após o T4 (P2) — Parcial
+## TD-021 — Limites do Event Fabric após o T4/T5 (P2) — Parcial
 
 **Descrição:** O T2 fechou a atomicidade `EventStore + outbox` e adicionou
 consumidor idempotente; o T4 adicionou handshake versionado, autenticação
-`SO_PEERCRED`/UID e soquete `0600` ao IPC. Duas fronteiras continuam
+`SO_PEERCRED`/UID e soquete `0600` ao IPC; o T5 não alterou o Event Fabric e
+fechou a paridade de policy/aprovação. Duas fronteiras continuam
 deliberadamente abertas:
 
 1. o outbox durável e os offsets/acks por assinante ainda não existem no daemon
@@ -247,6 +248,33 @@ protegido contra outros UIDs, mas ainda não há durabilidade de assinatura no
 Control Plane nem isolamento entre processos do mesmo usuário.
 
 **Próxima ação:** implementar outbox/offsets no Rust e claim transacional de
-consumidor antes de mover o gate para o Control Plane (T5–T6); TLS,
+consumidor antes de mover o gate para o Control Plane (T6); TLS,
 autenticação por token e rate limit pertencem ao endurecimento posterior. Não
 expor o socket remotamente até o gate Rust estar fechado.
+
+---
+
+## TD-022 — Approval Manager Rust sem persistência, histórico ou recuperação (P1) — Open
+
+**Descrição:** O T5 fechou a paridade funcional do `ApprovalManager` Rust em
+memória: `request`/`request_with_ttl`, `decide`, `claim`, `verify_action`,
+`revoke`, `mark_consumed`, `expire_stale` e todos os estados do contrato
+(`PENDING`, `APPROVED`, `DENIED`, `CLAIMED`, `CONSUMED`, `EXPIRED`, `REVOKED`).
+O que ainda não existe no Rust:
+
+1. persistência em SQLite — reiniciar o daemon invalida aprovações pendentes;
+2. histórico/listagem (`list_pending`, `get_history`) e paginação;
+3. tabela de execuções e `recover_orphans` para aprovações `CLAIMED` cujo
+   processo morreu antes de `CONSUMED`;
+4. migração/convivência com o banco de aprovações do Python.
+
+**Impacto:** o comportamento é fail-closed (reinício nega, não autoriza), o que
+é aceitável enquanto o Python é a autoridade final. Porém o T6 não pode mover a
+autoridade para o Rust sem durabilidade e recuperação de órfãos: uma execução
+interrompida ficaria sem estado observável, e um reinício apagaria a trilha de
+auditoria de aprovações.
+
+**Próxima ação:** no T6, persistir aprovações e execuções no SQLite governado
+(ou adaptador equivalente), com migração explícita, índices, TTL e recuperação
+de órfãos; preservar o hash canônico, os estados e os fixtures de paridade.
+Até lá, manter o Python como autoridade efetiva e não expor o IPC remotamente.

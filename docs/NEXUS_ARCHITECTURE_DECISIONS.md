@@ -1,11 +1,11 @@
 # NEXUS Architecture Decisions
 
-**Versão:** 1.5
+**Versão:** 1.6
 **Atualizado:** 2026-11-14
 **Projeto:** NEXUS — Cognitive Operating System  
 **Escopo:** Registro de decisões arquiteturais (ADRs) — contexto, problema, alternativas, decisão, consequências, implicações de segurança e migração.
 
-> **Nota:** os ADRs 0001–0013 são registros históricos e preservam as contagens de testes da data original. O ADR 0014 consolida o endurecimento da auditoria de 2026-11-12. O ADR 0015 registra a ligação do Execution Gate ao runtime e o contrato `authorize → executar → commit` (T0). O ADR 0016 congela os contratos Python ↔ Rust v1.0.0 (T1). O ADR 0017 torna o Event Fabric uma porta única, com outbox no mesmo SQLite do EventStore, consumidor idempotente e bridge IPC Python ↔ Rust (T2). O ADR 0018 persiste o Knowledge Graph no mesmo SQLite, com proveniência, confiança, validade e bloqueio de promoção de simulação a fato (T3). O ADR 0019 adiciona o IPC de controle no daemon Rust, com handshake versionado, autenticação local por `SO_PEERCRED`, comandos de autorização/aprovação e aprovação de uso único em memória (T4).
+> **Nota:** os ADRs 0001–0013 são registros históricos e preservam as contagens de testes da data original. O ADR 0014 consolida o endurecimento da auditoria de 2026-11-12. O ADR 0015 registra a ligação do Execution Gate ao runtime e o contrato `authorize → executar → commit` (T0). O ADR 0016 congela os contratos Python ↔ Rust v1.0.0 (T1). O ADR 0017 torna o Event Fabric uma porta única, com outbox no mesmo SQLite do EventStore, consumidor idempotente e bridge IPC Python ↔ Rust (T2). O ADR 0018 persiste o Knowledge Graph no mesmo SQLite, com proveniência, confiança, validade e bloqueio de promoção de simulação a fato (T3). O ADR 0019 adiciona o IPC de controle no daemon Rust, com handshake versionado, autenticação local por `SO_PEERCRED`, comandos de autorização/aprovação e aprovação de uso único em memória (T4). O ADR 0020 fecha a paridade de Policy Engine e Approval Manager no Rust, com revogação, TTL por solicitação, consumo `CLAIMED → CONSUMED` e fixtures compartilhados de decisão e ciclo de vida (T5).
 
 ---
 
@@ -111,3 +111,4 @@ Control Plane funcional, independente de LLM. Sinais de SO não tratados (encerr
 | 0017 | Event Fabric único: outbox transacional, consumidor idempotente e bridge Python ↔ Rust (T2) | aceito |
 | 0018 | Knowledge Graph persistente: nós, arestas, proveniência e confiança (T3) | aceito |
 | 0019 | IPC de controle no daemon Rust: handshake, autenticação local e autorização (T4) | aceito |
+| 0020 | Paridade de Policy Engine e Approval Manager no Rust: revogação, TTL e consumo (T5) | aceito |

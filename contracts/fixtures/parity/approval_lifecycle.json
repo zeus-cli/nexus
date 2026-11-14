@@ -1,0 +1,109 @@
+{
+  "contract_version": "1.0.0",
+  "source": "nexus_core/approval.py::ApprovalManager e core/nexus-daemon/src/approval.rs",
+  "description": "Máquina de estados normativa do Approval Manager. Python e Rust executam a mesma sequência e comparam expect_ok/expect_status; verify_action compara o hash sem consumir e expire_stale devolve a contagem de expirados.",
+  "default_ttl_seconds": 3600.0,
+  "request": {
+    "tool_id": "sys.dangerous",
+    "params": {
+      "args": []
+    },
+    "task_id": "task-contract-1",
+    "plan_id": "plan-contract-1",
+    "execution_mode": "HOST",
+    "access_level": "WRITE",
+    "fs_scope": "DEFAULT",
+    "net_scope": "NONE",
+    "resource_limits": "default",
+    "policy_version": "1.0",
+    "justification": "manual review"
+  },
+  "variant_request": {
+    "tool_id": "sys.dangerous",
+    "params": {
+      "args": ["--danger"]
+    },
+    "task_id": "task-contract-1",
+    "plan_id": "plan-contract-1",
+    "execution_mode": "HOST",
+    "access_level": "WRITE",
+    "fs_scope": "DEFAULT",
+    "net_scope": "NONE",
+    "resource_limits": "default",
+    "policy_version": "1.0",
+    "justification": "changed parameters"
+  },
+  "expected_hash": "d1b1f67006b59323c2726227a35c232e482caada812d8e9656cbde75ca4369c6",
+  "scenarios": [
+    {
+      "name": "approved_claimed_consumed",
+      "steps": [
+        {"op": "create", "expect_status": "PENDING"},
+        {"op": "verify_action", "params": "original", "expect": true},
+        {"op": "verify_action", "params": "variant", "expect": false},
+        {"op": "decide", "decision": "APPROVED", "expect_ok": true, "expect_status": "APPROVED"},
+        {"op": "claim", "params": "variant", "expect_ok": false, "expect_status": "APPROVED"},
+        {"op": "claim", "params": "original", "expect_ok": true, "expect_status": "CLAIMED"},
+        {"op": "claim", "params": "original", "expect_ok": false, "expect_status": "CLAIMED"},
+        {"op": "consume", "expect_ok": true, "expect_status": "CONSUMED"},
+        {"op": "consume", "expect_ok": false, "expect_status": "CONSUMED"},
+        {"op": "revoke", "expect_ok": false, "expect_status": "CONSUMED"},
+        {"op": "decide", "decision": "DENIED", "expect_ok": false, "expect_status": "CONSUMED"}
+      ]
+    },
+    {
+      "name": "denied_is_terminal",
+      "steps": [
+        {"op": "create", "expect_status": "PENDING"},
+        {"op": "decide", "decision": "DENIED", "expect_ok": true, "expect_status": "DENIED"},
+        {"op": "claim", "params": "original", "expect_ok": false, "expect_status": "DENIED"},
+        {"op": "decide", "decision": "APPROVED", "expect_ok": false, "expect_status": "DENIED"},
+        {"op": "revoke", "expect_ok": false, "expect_status": "DENIED"},
+        {"op": "consume", "expect_ok": false, "expect_status": "DENIED"},
+        {"op": "verify_action", "params": "original", "expect": true}
+      ]
+    },
+    {
+      "name": "revoked_pending",
+      "steps": [
+        {"op": "create", "expect_status": "PENDING"},
+        {"op": "verify_action", "params": "original", "expect": true},
+        {"op": "revoke", "expect_ok": true, "expect_status": "REVOKED"},
+        {"op": "decide", "decision": "APPROVED", "expect_ok": false, "expect_status": "REVOKED"},
+        {"op": "claim", "params": "original", "expect_ok": false, "expect_status": "REVOKED"},
+        {"op": "revoke", "expect_ok": false, "expect_status": "REVOKED"}
+      ]
+    },
+    {
+      "name": "revoked_approved",
+      "steps": [
+        {"op": "create", "expect_status": "PENDING"},
+        {"op": "decide", "decision": "APPROVED", "expect_ok": true, "expect_status": "APPROVED"},
+        {"op": "revoke", "expect_ok": true, "expect_status": "REVOKED"},
+        {"op": "claim", "params": "original", "expect_ok": false, "expect_status": "REVOKED"}
+      ]
+    },
+    {
+      "name": "ttl_expires_pending",
+      "steps": [
+        {"op": "create", "ttl_seconds": 0.0, "expect_status": "PENDING"},
+        {"op": "expire_stale", "expect_expired": 1},
+        {"op": "status", "expect_status": "EXPIRED"},
+        {"op": "decide", "decision": "APPROVED", "expect_ok": false, "expect_status": "EXPIRED"},
+        {"op": "claim", "params": "original", "expect_ok": false, "expect_status": "EXPIRED"},
+        {"op": "revoke", "expect_ok": false, "expect_status": "EXPIRED"}
+      ]
+    },
+    {
+      "name": "hash_binding_blocks_claim",
+      "steps": [
+        {"op": "create", "expect_status": "PENDING"},
+        {"op": "decide", "decision": "APPROVED", "expect_ok": true, "expect_status": "APPROVED"},
+        {"op": "verify_action", "params": "variant", "expect": false},
+        {"op": "claim", "params": "variant", "expect_ok": false, "expect_status": "APPROVED"},
+        {"op": "verify_action", "params": "original", "expect": true},
+        {"op": "claim", "params": "original", "expect_ok": true, "expect_status": "CLAIMED"}
+      ]
+    }
+  ]
+}

@@ -141,24 +141,8 @@ impl Default for ExecutionGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::{ApprovalDecision, ApprovalRequest};
+    use crate::contracts::ApprovalDecision;
     use serde_json::json;
-
-    fn approval_request() -> ApprovalRequest {
-        ApprovalRequest {
-            tool_id: "sys.dangerous".to_string(),
-            params: json!({"args": []}),
-            task_id: "task-1".to_string(),
-            plan_id: "plan-1".to_string(),
-            execution_mode: "HOST".to_string(),
-            access_level: "WRITE".to_string(),
-            fs_scope: "DEFAULT".to_string(),
-            net_scope: "NONE".to_string(),
-            resource_limits: "default".to_string(),
-            policy_version: "1.0".to_string(),
-            justification: "manual review".to_string(),
-        }
-    }
 
     fn request(risk_level: &str) -> AuthorizationRequest {
         AuthorizationRequest {

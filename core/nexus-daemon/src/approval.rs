@@ -1,10 +1,10 @@
-//! Approval Manager mínimo do Control Plane (T4).
+//! Approval Manager do Control Plane (T4/T5).
 //!
-//! O T4 expõe o ciclo de aprovação pelo IPC com as garantias que já são
-//! possíveis sem mover a autoridade final: hash canônico vinculado à operação,
-//! TTL, decisão única, claim atômico e uso único para autorização. A paridade
-//! completa com o Python (revogação, CLAIMED → CONSUMED, persistência e
-//! histórico) pertence ao T5.
+//! O T5 fecha a paridade de estado e ciclo de vida com o Python:
+//! `PENDING → APPROVED|DENIED|EXPIRED`, `APPROVED → CLAIMED|REVOKED|EXPIRED`,
+//! `CLAIMED → CONSUMED`, revogação, verificação de vínculo por hash, TTL por
+//! solicitação e uso único. Persistência durável e histórico continuam
+//! pendentes: reiniciar o daemon invalida aprovações (fail-closed).
 
 use crate::contracts::{ApprovalDecision, ApprovalRecord, ApprovalRequest, ContractError};
 use std::collections::HashMap;
@@ -25,14 +25,18 @@ pub enum ApprovalError {
     Expired(String),
     #[error("approval {0} não foi aprovada")]
     NotApproved(String),
+    #[error("approval {0} não está em CLAIMED")]
+    NotClaimed(String),
+    #[error("approval {0} não pode ser revogada no estado atual")]
+    NotRevocable(String),
     #[error("params divergem da aprovação vinculada")]
     HashMismatch,
     #[error("contrato: {0}")]
     Contract(#[from] ContractError),
 }
 
-/// Registro em memória. Reiniciar o daemon invalida approvals pendentes —
-/// comportamento fail-closed até a persistência do T5.
+/// Registros em memória, protegidos por mutex. Reiniciar o daemon invalida
+/// aprovações — o comportamento é fail-closed, nunca fail-open.
 pub struct ApprovalManager {
     approvals: Mutex<HashMap<String, ApprovalRecord>>,
     ttl_s: f64,
@@ -54,17 +58,29 @@ impl ApprovalManager {
         }
     }
 
-    pub fn ttl_secs(&self) -> f64 {
-        self.ttl_s
-    }
-
-    /// Cria uma solicitação PENDING vinculada ao hash canônico da operação.
+    /// Cria uma solicitação PENDING vinculada ao hash canônico da operação,
+    /// usando o TTL padrão do manager.
     pub fn request(
         &self,
         request: &ApprovalRequest,
         risk_level: Option<&str>,
     ) -> Result<ApprovalRecord, ApprovalError> {
+        self.request_with_ttl(request, risk_level, self.ttl_s)
+    }
+
+    /// Cria uma solicitação PENDING com TTL explícito por solicitação.
+    ///
+    /// Espelha `ApprovalManager.request_approval(req, ttl_s=...)` do Python.
+    pub fn request_with_ttl(
+        &self,
+        request: &ApprovalRequest,
+        risk_level: Option<&str>,
+        ttl_s: f64,
+    ) -> Result<ApprovalRecord, ApprovalError> {
         request.validate()?;
+        if !ttl_s.is_finite() || ttl_s < 0.0 {
+            return Err(ApprovalError::Invalid(format!("ttl inválido: {ttl_s}")));
+        }
         if let Some(risk) = risk_level {
             if !matches!(risk, "LOW" | "MEDIUM" | "HIGH" | "CRITICAL") {
                 return Err(ApprovalError::Invalid(format!(
@@ -90,7 +106,7 @@ impl ApprovalManager {
             justification: Some(request.justification.clone()),
             status: "PENDING".to_string(),
             created_at: now,
-            expires_at: now + self.ttl_s,
+            expires_at: now + ttl_s,
             decided_at: None,
             decided_by: None,
             consumed_at: None,
@@ -141,8 +157,8 @@ impl ApprovalManager {
     /// Verifica o vínculo e consome a aprovação para uma única autorização.
     ///
     /// O claim é atômico sob o mutex: duas chamadas concorrentes não podem
-    /// consumir a mesma aprovação. A transição para CONSUMED acontece no
-    /// ciclo de execução (T6), que ainda não existe no Control Plane.
+    /// consumir a mesma aprovação. A transição para CONSUMED é feita por
+    /// `mark_consumed` quando a execução começa (T6).
     pub fn claim(
         &self,
         approval_id: &str,
@@ -167,6 +183,60 @@ impl ApprovalManager {
             return Err(ApprovalError::HashMismatch);
         }
         record.status = "CLAIMED".to_string();
+        Ok(record.clone())
+    }
+
+    /// Confere se o request ainda corresponde ao hash vinculado.
+    ///
+    /// Espelha `ApprovalManager.verify_action` do Python: não consome, não
+    /// expira e não altera o estado; aprovação inexistente ou hash divergente
+    /// devolvem `false`. Um request fora do contrato é erro (fail-closed).
+    pub fn verify_action(
+        &self,
+        approval_id: &str,
+        request: &ApprovalRequest,
+    ) -> Result<bool, ApprovalError> {
+        let current_hash = request.params_hash()?;
+        let approvals = self.approvals.lock().expect("lock de approvals");
+        Ok(approvals
+            .get(approval_id)
+            .is_some_and(|record| record.params_hash == current_hash))
+    }
+
+    /// Transição `CLAIMED → CONSUMED` antes de iniciar a execução.
+    ///
+    /// Espelha `ApprovalManager.mark_starting` do Python. Só uma aprovação
+    /// previamente reivindicada pode ser consumida; qualquer outro estado é
+    /// erro e não altera o registro.
+    pub fn mark_consumed(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
+        let now = unix_now();
+        let mut approvals = self.approvals.lock().expect("lock de approvals");
+        let record = approvals
+            .get_mut(approval_id)
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
+        if record.status != "CLAIMED" {
+            return Err(ApprovalError::NotClaimed(approval_id.to_string()));
+        }
+        record.status = "CONSUMED".to_string();
+        record.consumed_at = Some(now);
+        Ok(record.clone())
+    }
+
+    /// Revoga uma aprovação `PENDING` ou `APPROVED`.
+    ///
+    /// Espelha `ApprovalManager.revoke` do Python: estados terminais
+    /// (`CLAIMED`, `CONSUMED`, `DENIED`, `EXPIRED`, `REVOKED`) não são
+    /// revogáveis. A checagem usa o estado armazenado, sem expirar antes,
+    /// exatamente como no Python.
+    pub fn revoke(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
+        let mut approvals = self.approvals.lock().expect("lock de approvals");
+        let record = approvals
+            .get_mut(approval_id)
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
+        if !matches!(record.status.as_str(), "PENDING" | "APPROVED") {
+            return Err(ApprovalError::NotRevocable(approval_id.to_string()));
+        }
+        record.status = "REVOKED".to_string();
         Ok(record.clone())
     }
 
@@ -268,6 +338,156 @@ mod tests {
     }
 
     #[test]
+    fn claimed_approval_is_consumed_once() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({"args": []}));
+        let record = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &record.approval_id, "APPROVED");
+
+        let claimed = manager.claim(&record.approval_id, &req).expect("claim");
+        assert_eq!(claimed.status, "CLAIMED");
+        assert!(claimed.consumed_at.is_none());
+
+        let consumed = manager.mark_consumed(&record.approval_id).expect("consume");
+        assert_eq!(consumed.status, "CONSUMED");
+        assert!(consumed.consumed_at.is_some());
+
+        assert!(matches!(
+            manager.mark_consumed(&record.approval_id),
+            Err(ApprovalError::NotClaimed(_))
+        ));
+        assert!(matches!(
+            manager.claim(&record.approval_id, &req),
+            Err(ApprovalError::NotPending(_))
+        ));
+        assert!(matches!(
+            manager.revoke(&record.approval_id),
+            Err(ApprovalError::NotRevocable(_))
+        ));
+    }
+
+    #[test]
+    fn revoke_accepts_pending_and_approved_only() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({}));
+
+        let pending = manager.request(&req, Some("HIGH")).unwrap();
+        let revoked = manager.revoke(&pending.approval_id).expect("revoke");
+        assert_eq!(revoked.status, "REVOKED");
+        assert!(matches!(
+            manager.decide(&ApprovalDecision {
+                approval_id: pending.approval_id.clone(),
+                decision: "APPROVED".to_string(),
+                approver: "operator".to_string(),
+                timestamp: unix_now(),
+            }),
+            Err(ApprovalError::NotPending(_))
+        ));
+        assert!(matches!(
+            manager.revoke(&pending.approval_id),
+            Err(ApprovalError::NotRevocable(_))
+        ));
+
+        let approved = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &approved.approval_id, "APPROVED");
+        assert_eq!(
+            manager.revoke(&approved.approval_id).unwrap().status,
+            "REVOKED"
+        );
+        assert!(matches!(
+            manager.claim(&approved.approval_id, &req),
+            Err(ApprovalError::NotPending(_))
+        ));
+
+        let denied = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &denied.approval_id, "DENIED");
+        assert!(matches!(
+            manager.revoke(&denied.approval_id),
+            Err(ApprovalError::NotRevocable(_))
+        ));
+    }
+
+    #[test]
+    fn verify_action_checks_hash_without_mutating_state() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({"args": ["--safe"]}));
+        let record = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &record.approval_id, "APPROVED");
+
+        assert!(manager
+            .verify_action(&record.approval_id, &req)
+            .expect("verify"));
+        let altered = request(json!({"args": ["--danger"]}));
+        assert!(!manager
+            .verify_action(&record.approval_id, &altered)
+            .expect("verify divergente"));
+        assert!(!manager
+            .verify_action("missing", &req)
+            .expect("verify inexistente"));
+        assert_eq!(
+            manager.status(&record.approval_id).unwrap().status,
+            "APPROVED"
+        );
+    }
+
+    #[test]
+    fn ttl_is_configurable_per_request() {
+        let manager = ApprovalManager::with_ttl_secs(3600.0);
+        let req = request(json!({}));
+        let short = manager
+            .request_with_ttl(&req, Some("HIGH"), 0.0)
+            .expect("ttl curto");
+        let long = manager.request(&req, Some("HIGH")).expect("ttl padrão");
+        assert!(short.expires_at <= long.created_at + 0.001);
+        assert!(long.expires_at > long.created_at);
+        assert_eq!(
+            manager.status(&short.approval_id).unwrap().status,
+            "EXPIRED"
+        );
+        assert_eq!(manager.status(&long.approval_id).unwrap().status, "PENDING");
+
+        assert!(matches!(
+            manager.request_with_ttl(&req, None, -1.0),
+            Err(ApprovalError::Invalid(_))
+        ));
+        assert!(matches!(
+            manager.request_with_ttl(&req, None, f64::NAN),
+            Err(ApprovalError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn expire_stale_does_not_touch_terminal_states() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({}));
+        let revoked = manager.request(&req, Some("HIGH")).unwrap();
+        manager.revoke(&revoked.approval_id).unwrap();
+        let denied = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &denied.approval_id, "DENIED");
+        {
+            let mut approvals = manager.approvals.lock().expect("lock de approvals");
+            approvals
+                .get_mut(&revoked.approval_id)
+                .expect("revogada")
+                .expires_at = 0.0;
+            approvals
+                .get_mut(&denied.approval_id)
+                .expect("negada")
+                .expires_at = 0.0;
+        }
+
+        assert_eq!(manager.expire_stale(), 0);
+        assert_eq!(
+            manager.status(&revoked.approval_id).unwrap().status,
+            "REVOKED"
+        );
+        assert_eq!(
+            manager.status(&denied.approval_id).unwrap().status,
+            "DENIED"
+        );
+    }
+
+    #[test]
     fn hash_mismatch_does_not_consume_approval() {
         let manager = ApprovalManager::new();
         let req = request(json!({"args": ["--safe"]}));
@@ -363,5 +583,109 @@ mod tests {
         ));
         assert_eq!(manager.expire_stale(), 0);
         assert_eq!(manager.len(), 0);
+    }
+
+    fn lifecycle_fixture() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("contracts/fixtures/parity/approval_lifecycle.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("falha ao ler {}: {error}", path.display()));
+        serde_json::from_str(&raw).expect("approval lifecycle fixture")
+    }
+
+    #[test]
+    fn shared_lifecycle_fixture_matches_python() {
+        let fixture = lifecycle_fixture();
+        assert_eq!(fixture["contract_version"], "1.0.0");
+        let original: ApprovalRequest =
+            serde_json::from_value(fixture["request"].clone()).expect("request");
+        let variant: ApprovalRequest =
+            serde_json::from_value(fixture["variant_request"].clone()).expect("variant");
+        let expected_hash = fixture["expected_hash"].as_str().expect("hash");
+        assert_eq!(original.params_hash().unwrap(), expected_hash);
+        let default_ttl = fixture["default_ttl_seconds"]
+            .as_f64()
+            .expect("default_ttl_seconds");
+
+        for scenario in fixture["scenarios"].as_array().expect("scenarios") {
+            let name = scenario["name"].as_str().expect("nome");
+            let manager = ApprovalManager::new();
+            let mut approval_id = String::new();
+            for step in scenario["steps"].as_array().expect("steps") {
+                let op = step["op"].as_str().expect("op");
+                let expect_status = step["expect_status"].as_str();
+                let ok = match op {
+                    "create" => {
+                        let ttl = step["ttl_seconds"].as_f64().unwrap_or(default_ttl);
+                        let record = manager
+                            .request_with_ttl(&original, None, ttl)
+                            .unwrap_or_else(|error| panic!("{name}: create falhou: {error}"));
+                        assert_eq!(record.params_hash, expected_hash, "{name}");
+                        assert_eq!(
+                            record.status,
+                            expect_status.expect("create expect_status"),
+                            "{name}"
+                        );
+                        approval_id = record.approval_id;
+                        continue;
+                    }
+                    "verify_action" => {
+                        let request = if step["params"].as_str() == Some("variant") {
+                            &variant
+                        } else {
+                            &original
+                        };
+                        let result = manager
+                            .verify_action(&approval_id, request)
+                            .expect("verify_action");
+                        assert_eq!(
+                            result,
+                            step["expect"].as_bool().expect("expect"),
+                            "{name}: step {step}"
+                        );
+                        continue;
+                    }
+                    "expire_stale" => {
+                        assert_eq!(
+                            manager.expire_stale(),
+                            step["expect_expired"].as_u64().expect("expect_expired") as usize,
+                            "{name}"
+                        );
+                        continue;
+                    }
+                    "status" => true,
+                    "decide" => manager
+                        .decide(&ApprovalDecision {
+                            approval_id: approval_id.clone(),
+                            decision: step["decision"].as_str().expect("decision").to_string(),
+                            approver: "operator".to_string(),
+                            timestamp: unix_now(),
+                        })
+                        .is_ok(),
+                    "claim" => {
+                        let request = if step["params"].as_str() == Some("variant") {
+                            &variant
+                        } else {
+                            &original
+                        };
+                        manager.claim(&approval_id, request).is_ok()
+                    }
+                    "consume" => manager.mark_consumed(&approval_id).is_ok(),
+                    "revoke" => manager.revoke(&approval_id).is_ok(),
+                    other => panic!("{name}: op desconhecida: {other}"),
+                };
+                if let Some(expected) = step["expect_ok"].as_bool() {
+                    assert_eq!(ok, expected, "{name}: step {step}");
+                }
+                if let Some(status) = expect_status {
+                    assert_eq!(
+                        manager.status(&approval_id).unwrap().status,
+                        status,
+                        "{name}: step {step}"
+                    );
+                }
+            }
+        }
     }
 }

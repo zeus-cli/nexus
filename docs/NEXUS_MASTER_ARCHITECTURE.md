@@ -1,6 +1,6 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.5
+**Versão:** 1.6
 **Atualizado:** 2026-11-14
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
@@ -48,7 +48,7 @@ NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 **Novo (Fase 1):** `core/nexus-daemon/` (Rust, Tokio) — Control Plane em construção:
 * barramento de eventos (memória) + store SQLite WAL com dedup;
 * servidor IPC sobre Unix Domain Socket (protocolo JSON por linha, compatível com o sentinel), com handshake `Hello`/`Welcome`, autenticação por `SO_PEERCRED`/UID e soquete `0600` (T4);
-* comandos de controle `Authorize`, `ApprovalRequest`, `ApprovalDecision`, `ApprovalStatus`, `Health` e `Event`, com timeout de handshake, limite de frame e versão de protocolo `1.0.0`;
+* comandos de controle `Authorize`, `ApprovalRequest`, `ApprovalDecision`, `ApprovalStatus`, `ApprovalRevoke`, `Health` e `Event`, com timeout de handshake, limite de frame e versão de protocolo `1.0.0`;
 * supervisor de ciclo de vida de serviços;
  * health check, logging estruturado, configuração TOML estrita;
  * security guard, policy engine e execution gate mínimos (Fase 1);
@@ -127,7 +127,7 @@ Componentes: World Builder, World Registry, Entity Manager, State Manager, Rules
 
 Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime, adaptadores (Filesystem, Process, Network, Browser, Application, API, Developer Tools).
 * Todas as operações do mundo real devem passar pelo Control Plane.
-* **Estado atual:** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O gate é obrigatório no caminho do runtime Python; a autoridade ainda é Python e a migração para o daemon Rust é T5–T6 (TD-015 resolvido; o T4 entregou apenas a superfície de controle local).
+* **Estado atual:** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O gate é obrigatório no caminho do runtime Python; a autoridade ainda é Python e a migração para o daemon Rust é T6 (TD-015 resolvido; T4/T5 entregaram superfície e paridade, sem mover a autoridade final).
 
 **Componentes de Secure Agency da Fase 3 (implementados e testados):**
 
@@ -328,9 +328,10 @@ a autoridade final de segurança:
   contrato inválido negam;
 * `ApprovalManager` do daemon usa hash canônico JCS/SHA-256, TTL padrão de
   3600 s, decisão única, claim atômico e uso único; `APPROVED` vira `CLAIMED`
-  na autorização, e `CLAIMED → CONSUMED` fica para o T6;
+  na autorização, e `CLAIMED → CONSUMED` é fechado no T5;
 * aprovações são em memória: reiniciar o daemon invalida pendências
-  (fail-closed). Revogação, persistência e paridade ampla pertencem ao T5;
+  (fail-closed). Revogação e paridade ampla foram fechadas no T5; persistência
+  e histórico continuam pendentes (TD-022);
 * a bridge `nexus_core/event_bridge.py` negocia o handshake e adiciona
   `authorize`, `approval_request`, `approval_decide` e `approval_status`,
   validando contratos na saída e na resposta.
@@ -338,18 +339,52 @@ a autoridade final de segurança:
 **Fora do escopo do T4:** mover a autoridade final para o Rust, persistir
 aprovações, outbox/offsets duráveis por assinante, TLS, autenticação por token
 e rate limit. O runtime Python continua sendo o gate obrigatório; a API
-permanece local e não deve ser exposta remotamente até o T5/T6.
+permanece local e não deve ser exposta remotamente até o T6.
 
-**Validação:** 468 testes + 12 subtests Python; `cargo test` no daemon com 67
-testes. `compileall`, `node --check` e `git diff --check` limpos nos arquivos do
-T4; o `ruff` global continua com achados pré-existentes.
+**Validação na entrega do T4:** 468 testes + 12 subtests Python; `cargo test`
+no daemon com 67 testes. `compileall`, `node --check` e `git diff --check`
+limpos nos arquivos do T4; o `ruff` global continua com achados pré-existentes.
 
 ---
 
-## 12. Próximos passos do roadmap
+## 12. T5 — Paridade de Policy Engine e Approval Manager (2026-11-14)
 
-T5 — Policy Engine + Approval Manager no Rust com paridade de decisão,
-revogação, TTL, uso único, persistência/migração e testes de paridade. Depois,
-T6 fecha o ciclo `authorize → executar → commit` no Control Plane. A autoridade
-de segurança só migra para o Rust após esses gates; até lá, o Python continua
-sendo a autoridade efetiva e a API não deve ser exposta remotamente.
+O T5 fecha a paridade de decisão e de ciclo de vida entre Python e Rust, ainda
+sem mover a autoridade final:
+
+* `PolicyEngine::evaluate_tool` espelha `PolicyEngine.evaluate`; o método
+  separado `evaluate_authorization` continua espelhando
+  `ExecutionGate._classify_risk`;
+* a divergência normativa é explícita: escrita `LOW` em `SAFE_ZONE` é `ALLOW`
+  no Policy Engine puro e `REQUIRES_APPROVAL` no Execution Gate sem autonomia
+  suficiente; ambos os comportamentos têm teste;
+* `contracts/fixtures/parity/policy_cases.json` (10 casos) é lido por
+  `tests/test_policy_parity.py` e pelos testes Rust;
+* o `ApprovalManager` Rust agora cobre `PENDING → APPROVED|DENIED|EXPIRED|
+  REVOKED`, `APPROVED → CLAIMED|REVOKED|EXPIRED` e `CLAIMED → CONSUMED`, com
+  `revoke`, `verify_action`, `mark_consumed` e TTL por solicitação;
+* `contracts/fixtures/parity/approval_lifecycle.json` (6 cenários) é executado
+  pelos dois lados; o `claim` do Python é modelado como
+  `verify_action + claim_approval`, porque o gate Python separa as etapas;
+* o IPC ganhou `ApprovalRevoke {approval_id}` e a bridge Python ganhou
+  `approval_revoke`; consumo não é comando público — será chamado pelo ciclo
+  de execução do T6;
+* aprovações do daemon continuam em memória, sem persistência/histórico
+  (TD-022). Reiniciar é fail-closed; o Python segue sendo a autoridade final.
+
+**Fora do escopo do T5:** mover a autoridade para o Rust, persistir aprovações,
+outbox/offsets duráveis, TLS, token e rate limit. A API permanece local.
+
+**Validação:** 494 testes + 12 subtests Python; `cargo test` no daemon com 77
+testes. `compileall`, `git diff --check` e `ruff` nos arquivos do T5 limpos.
+
+---
+
+## 13. Próximos passos do roadmap
+
+T6 — Execution Gate autoritativo no Rust. Antes de mover a autoridade, o T6
+precisa fechar persistência/histórico de aprovações, produção de `CONSUMED` pelo
+ciclo de execução, fail-closed quando o daemon estiver indisponível e teste com
+daemon morto. A autoridade de segurança só migra para o Rust depois desse gate;
+até lá, o Python continua sendo a autoridade efetiva e a API não deve ser
+exposta remotamente.
