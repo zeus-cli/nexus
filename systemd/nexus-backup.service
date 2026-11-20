@@ -1,0 +1,22 @@
+[Unit]
+Description=NEXUS — backup baseline criptografado (restic)
+Documentation=file:///home/nexus/Documentos/nexus/docs/NEXUS_T7_EXECUTION_PLAN.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documentos/nexus
+Environment=NEXUS_BACKUP_ENV=%h/Documentos/nexus/config/backup.env
+ExecStart=%h/Documentos/nexus/scripts/backup-baseline.sh
+Nice=10
+IOSchedulingClass=idle
+
+# O repositório restic deve estar fora de /home (ex.: /mnt/nexus-backup).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=%h/Documentos/nexus/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true

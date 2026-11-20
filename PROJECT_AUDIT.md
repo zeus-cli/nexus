@@ -1,12 +1,36 @@
 # NEXUS Project Audit
 
 **Original audit date:** 2026-11-03
-**Updated:** 2026-11-12
+**Updated:** 2026-11-20
 **Workspace:** `/home/nexus/Documentos/nexus`
 
-> This document preserves the original project-audit findings but reflects the current state after Phases 1–7 and the 2026-11-12 hardening audit. The historical repository audit remains in `docs/audit/NEXUS_REPOSITORY_AUDIT.md`.
+> A auditoria abaixo registra o estado observado até 2026-11-12. O snapshot no
+> início deste documento atualiza o progresso posterior. Para o estado
+> operacional, consulte `ROADMAP.md` e `docs/NEXUS_MASTER_ARCHITECTURE.md`.
 
-## 1. Executive Summary
+## 0. Current status — 2026-11-20
+
+- **T6:** Execution Gate autoritativo implementado no daemon Rust. O modo segue
+  opt-in e está desativado no `config/nexus.toml` do workspace.
+- **T7:** em andamento. O Dell Inspiron 15 3511 é a estação de desenvolvimento;
+  o Acer Nitro V15 é o servidor alvo. As units e o backup têm artefatos no
+  repositório, mas a instalação, a rede, a GPU/Ollama e o restore ainda não
+  foram validados no Acer.
+- **T8:** T8.1–T8.4 têm catálogo, store Rust, IPC e bootstrap/CLI local do owner.
+  Pairing de dispositivos, integração do gate com principals e clientes ainda
+  não estão concluídos.
+- **Limites atuais:** API com token local único e bind de loopback; sete
+  ferramentas de automação somente leitura; sem namespaces de memória por
+  pessoa/dispositivo.
+- **Validação:** o último registro de suíte completa é o T6, em 2026-11-16
+  (516 testes Python + 12 subtests; 86 testes Rust no daemon). A revisão atual
+  do workspace não tem uma execução completa registrada.
+
+Consulte o [plano T7](docs/NEXUS_T7_EXECUTION_PLAN.md), o
+[design T8](docs/NEXUS_T8_IDENTITY_DESIGN.md) e o
+[registro de dívida técnica](docs/NEXUS_TECHNICAL_DEBT.md).
+
+## 1. Historical audit snapshot — 2026-11-12
 
 NEXUS is no longer only a prototype. It contains a functioning local-first cognitive layer with:
 

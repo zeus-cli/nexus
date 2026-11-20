@@ -1,8 +1,17 @@
-# PERFORMANCE BASELINE 1.1 — NEXUS
+# PERFORMANCE BASELINE 1.1 — NEXUS (historical measurements)
 
-**Updated:** 2026-11-12
+**Measurements recorded:** 2026-11-12
+**Last edited:** 2026-11-20
 
-## Target Hardware: Intel Low-Power, 12 GB RAM
+## Ambiente medido
+
+As medições registradas foram feitas no ambiente Intel de baixo consumo com
+aproximadamente 12 GB de RAM, correspondente à estação de desenvolvimento Dell
+Inspiron 15 3511. Elas não representam o Acer Nitro V15, que continua sendo o
+servidor alvo e ainda não foi benchmarkado. Nenhuma medição nova foi feita nesta
+revisão editorial.
+
+## Baseline histórico
 
 ### Baseline Metrics
 

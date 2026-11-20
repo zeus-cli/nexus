@@ -1,7 +1,25 @@
-# SECURITY REVIEW 1.1 — NEXUS
+# SECURITY REVIEW 1.1 — NEXUS (historical snapshot)
 
-**Updated:** 2026-11-12
-**Validation:** 305 tests + 12 subtests passing; ruff/compileall/node-check/diff-check clean.
+**Review date:** 2026-11-12
+**Validation on that revision:** 305 tests + 12 subtests passing;
+ruff/compileall/node-check/diff-check clean.
+
+> Esta revisão descreve a revisão de 2026-11-12 e não é uma aprovação de
+> segurança da árvore de trabalho atual. O T6 e o início do T8 mudaram a
+> integração desde então.
+
+## Estado posterior — 2026-11-20
+
+- O bootstrap integra o Execution Gate ao caminho local. O daemon Rust oferece
+  autoridade final opt-in; `control_plane.enabled` permanece `false` por
+  padrão e a operação no Acer Nitro V15 ainda não foi validada.
+- T8.1–T8.4 implementam o catálogo de escopos, store Rust, IPC e administração
+  local do owner. Pairing e aplicação dos escopos a cada pedido ainda estão
+  pendentes.
+- A API segue em loopback com token local único. O projeto ainda não fornece
+  identidade HTTP por dispositivo ou clientes móveis pareados.
+- A automação continua limitada a sete diagnósticos somente leitura. Revise
+  `SECURITY.md` para controles e riscos residuais atuais.
 
 ## Threat Model & Mitigations
 

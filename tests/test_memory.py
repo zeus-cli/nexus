@@ -59,6 +59,24 @@ class MemoryStoreTest(unittest.TestCase):
 
         self.assertEqual([item.memory_id for item in results], [semantic.memory_id])
 
+    def test_hybrid_search_excludes_expired_semantic_matches_before_limit(self) -> None:
+        active = self.memory.create(kind="semantic", content="release notes")
+        expired = self.memory.create(kind="semantic", content="release notes")
+        self.database.execute(
+            "UPDATE memories SET expires_at = ? WHERE memory_id = ?",
+            ((datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), expired.memory_id),
+        )
+        fake_vectors = MagicMock()
+        fake_vectors.search.return_value = [
+            SimpleNamespace(memory_id=expired.memory_id),
+            SimpleNamespace(memory_id=active.memory_id),
+        ]
+        self.memory._vector_store = fake_vectors
+
+        results = self.memory.search("deploy", hybrid=True, limit=1)
+
+        self.assertEqual([item.memory_id for item in results], [active.memory_id])
+
     def test_search_rejects_invalid_kind_and_non_positive_limit(self) -> None:
         with self.assertRaises(ValueError):
             self.memory.search("anything", kind="bogus")

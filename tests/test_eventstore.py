@@ -15,7 +15,7 @@ from nexus_core.recorder import EventRecorder
 
 
 def build_store(root: Path, **kwargs) -> tuple[Database, EventStore]:
-    database = Database(root / "data" / "databases" / "zeus_events.db")
+    database = Database(root / "data" / "databases" / "nexus_events.db")
     database.connect()
     database.migrate()
     return database, EventStore(database, **kwargs)
@@ -280,7 +280,7 @@ class MaintenanceTest(StoreTestCase):
         self.assertEqual(self.store.count(), 1)
 
     def test_persistence_across_reconnect(self) -> None:
-        path = self.root / "persist" / "data" / "databases" / "zeus_events.db"
+        path = self.root / "persist" / "data" / "databases" / "nexus_events.db"
         first = Database(path)
         first.connect()
         first.migrate()

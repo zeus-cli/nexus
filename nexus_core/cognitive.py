@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,6 +11,7 @@ from typing import Any
 
 from .events import Event, Severity
 from .llm_router.gateway import CompletionResult, LLMGateway
+from .llm_router.json_utils import extract_json_object
 from .memory.records import MemoryRecord, MemoryStore
 from .recorder import EventRecorder
 from .automation import AutomationEngine, ActionResult, ApprovalRequired, ApprovalRequest
@@ -447,16 +447,40 @@ class CognitiveCore:
         )
         
         try:
-            data = json.loads(res.text)
-            steps = [
-                PlanStep(
-                    type=s.get("type", "reason"),
-                    description=s.get("description", ""),
-                    query=s.get("query"),
-                    action_id=s.get("action_id"),
-                    idempotent=s.get("idempotent", True)
-                ) for s in data.get("steps", [])
-            ]
+            data = extract_json_object(res.text)
+            raw_steps = data.get("steps", [])
+            if not isinstance(raw_steps, list):
+                raise ValueError("campo 'steps' não é uma lista")
+            steps: list[PlanStep] = []
+            for item in raw_steps:
+                if not isinstance(item, dict):
+                    continue
+                step_type = item.get("type", "reason")
+                if step_type not in ("reason", "memory", "automation"):
+                    continue
+                description = item.get("description", "")
+                if not isinstance(description, str):
+                    description = str(description)
+                query = item.get("query")
+                if query is not None and not isinstance(query, str):
+                    query = None
+                action_id = item.get("action_id")
+                if action_id is not None and not isinstance(action_id, str):
+                    action_id = None
+                idempotent = item.get("idempotent", True)
+                if not isinstance(idempotent, bool):
+                    idempotent = True
+                steps.append(
+                    PlanStep(
+                        type=step_type,
+                        description=description,
+                        query=query,
+                        action_id=action_id,
+                        idempotent=idempotent,
+                    )
+                )
+            if not steps:
+                raise ValueError("plano não contém passos válidos")
             return tuple(steps)
         except Exception:
             return (PlanStep(type="reason", description="Process request", query=None, action_id=None),)

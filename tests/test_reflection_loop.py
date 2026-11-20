@@ -104,6 +104,61 @@ async def test_reflection_uses_task_accepted_by_gateway():
 
 
 @pytest.mark.asyncio
+async def test_reflection_accepts_markdown_fenced_json():
+    class FencedGateway:
+        async def complete(self, prompt, *, task="reasoning", system=None, json_mode=False):
+            return make_completion(
+                '```json\n'
+                '{"decision": "PARTIAL_SUCCESS", "justification": "faltou um item",'
+                ' "suggested_action": "completar"}\n'
+                '```'
+            )
+
+    result = await ReflectionEngine(FencedGateway()).critique("goal", [], [])
+
+    assert result.decision is ReflectionDecision.PARTIAL_SUCCESS
+    assert result.justification == "faltou um item"
+    assert result.suggested_action == "completar"
+
+
+@pytest.mark.asyncio
+async def test_planning_accepts_markdown_fenced_json(setup_core):
+    core, gateway, _, _, _ = setup_core
+    gateway.responses.append(
+        make_completion(
+            '```json\n{"steps": [{"type": "reason", "description": "Plano real"}]}\n```',
+            "planning",
+        )
+    )
+
+    plan = await core._generate_plan("faça algo", None, None, None)
+
+    assert len(plan) == 1
+    assert plan[0].description == "Plano real"
+
+
+@pytest.mark.asyncio
+async def test_planning_sanitizes_invalid_field_types(setup_core):
+    core, gateway, _, _, _ = setup_core
+    gateway.responses.append(
+        make_completion(
+            '{"steps": [{"type": "memory", "description": 42, "query": {"bad": true},'
+            ' "action_id": 7, "idempotent": "sim"}]}',
+            "planning",
+        )
+    )
+
+    plan = await core._generate_plan("faça algo", None, None, None)
+
+    assert len(plan) == 1
+    assert plan[0].type == "memory"
+    assert plan[0].description == "42"
+    assert plan[0].query is None
+    assert plan[0].action_id is None
+    assert plan[0].idempotent is True
+
+
+@pytest.mark.asyncio
 async def test_execution_success(setup_core):
     core, gateway, _, _, _ = setup_core
     

@@ -17,7 +17,9 @@ pub struct EventStore {
 impl EventStore {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
+        )?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,12 +47,18 @@ impl EventStore {
             "CREATE INDEX IF NOT EXISTS ix_events_correlation ON events(correlation_id)",
             [],
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Insere um evento, respeitando dedup dentro da janela configurada.
     /// Retorna `(evento_armazenado, inserido)`.
-    pub fn append(&self, event: &Event, dedup_window_seconds: i64) -> Result<(Event, bool), rusqlite::Error> {
+    pub fn append(
+        &self,
+        event: &Event,
+        dedup_window_seconds: i64,
+    ) -> Result<(Event, bool), rusqlite::Error> {
         let payload_json = serde_json::to_string(&event.payload).unwrap_or_default();
         let dedup_key = event.dedup_key();
 
@@ -103,8 +111,9 @@ impl EventStore {
                 event_id: r.get(0)?,
                 kind: r.get(1)?,
                 source: r.get(2)?,
-                payload: serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or(serde_json::Value::Null),
-                severity: r.get(4)?,
+                severity: r.get(3)?,
+                payload: serde_json::from_str(&r.get::<_, String>(4)?)
+                    .unwrap_or(serde_json::Value::Null),
                 dedup: r.get::<_, Option<String>>(5)?.is_some(),
                 correlation_id: r.get(6)?,
                 created_at: r.get(7)?,
@@ -162,9 +171,22 @@ mod tests {
     #[test]
     fn query_by_kind() {
         let store = EventStore::open(":memory:").unwrap();
-        store.append(&Event::new("system.started", "a", serde_json::json!({})), 86400).unwrap();
-        store.append(&Event::new("agent.task.started", "b", serde_json::json!({})), 86400).unwrap();
+        store
+            .append(
+                &Event::new("system.started", "a", serde_json::json!({})),
+                86400,
+            )
+            .unwrap();
+        store
+            .append(
+                &Event::new("agent.task.started", "b", serde_json::json!({})),
+                86400,
+            )
+            .unwrap();
         let rows = store.query_by_kind("system.started", 10).unwrap();
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].payload, serde_json::json!({}));
+        assert_eq!(rows[0].severity, "info");
+        assert_eq!(rows[0].source, "a");
     }
 }

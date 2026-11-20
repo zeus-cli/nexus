@@ -54,6 +54,30 @@ class CliParserTest(unittest.TestCase):
         self.assertEqual(args.provider, "ollama-local")
         self.assertEqual(args.model, "gemma4:12b")
 
+    def test_identity_commands_parse_nested_options(self) -> None:
+        init = build_parser().parse_args(
+            ["identity", "init", "--name", "Casa", "--json"]
+        )
+        self.assertEqual(init.identity_command, "init")
+        self.assertEqual(init.name, "Casa")
+        self.assertTrue(init.json)
+
+        listed = build_parser().parse_args(
+            ["identity", "list", "--kind", "user", "--status", "active"]
+        )
+        self.assertEqual(listed.kind, "user")
+        self.assertEqual(listed.status, "active")
+
+        revoke = build_parser().parse_args(
+            ["identity", "revoke", "prn_x", "--reason", "teste"]
+        )
+        self.assertEqual(revoke.principal_id, "prn_x")
+        self.assertEqual(revoke.reason, "teste")
+
+        status = build_parser().parse_args(["identity", "status", "--json"])
+        self.assertEqual(status.identity_command, "status")
+        self.assertTrue(status.json)
+
     def test_memory_export_is_private_and_valid_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

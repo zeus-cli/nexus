@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from dataclasses import dataclass
 from .approval import ApprovalManager, ApprovalRequest, ApprovalDecision, ApprovalStatus
+from .control_plane import ControlPlaneError
 
 @dataclass(frozen=True)
 class APIUser:
@@ -36,7 +37,7 @@ class ApprovalAPI:
             )
             self._manager.decide(request_id, decision)
             return True
-        except ValueError:
+        except (ValueError, ControlPlaneError):
             return False
 
     def deny(self, request_id: str, user: APIUser) -> bool:
@@ -48,7 +49,7 @@ class ApprovalAPI:
             )
             self._manager.decide(request_id, decision)
             return True
-        except ValueError:
+        except (ValueError, ControlPlaneError):
             return False
 
     def revoke(self, request_id: str, user: APIUser) -> bool:
@@ -56,7 +57,7 @@ class ApprovalAPI:
         try:
             self._manager.revoke(request_id)
             return True
-        except ValueError:
+        except (ValueError, ControlPlaneError):
             return False
 
     def get_history(self, limit: int = 100, status: str | None = None, offset: int = 0) -> list[dict[str, Any]]:

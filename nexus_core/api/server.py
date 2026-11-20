@@ -18,7 +18,7 @@ UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")
 
 def bridge_uvicorn_logging() -> None:
     """Faz o uvicorn escrever nos mesmos handlers do NEXUS (arquivo + console)."""
-    root = logging.getLogger("zeus")
+    root = logging.getLogger("nexus")
     for name in UVICORN_LOGGERS:
         target = logging.getLogger(name)
         target.handlers = list(root.handlers)
@@ -51,7 +51,7 @@ def run_server(
     auth = Authenticator(
         info.token, config.safety.autonomy_level, source=info.source
     )
-    hub = RealtimeHub(runtime.bus, logger=logging.getLogger("zeus.api.realtime"))
+    hub = RealtimeHub(runtime.bus, logger=logging.getLogger("nexus.api.realtime"))
     app = create_app(runtime, auth=auth, hub=hub)
 
     bridge_uvicorn_logging()

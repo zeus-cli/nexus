@@ -1,0 +1,13 @@
+[Unit]
+Description=NEXUS — timer diário do backup baseline
+Documentation=file:///home/nexus/Documentos/nexus/docs/NEXUS_T7_EXECUTION_PLAN.md
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+AccuracySec=1m
+Unit=nexus-backup.service
+
+[Install]
+WantedBy=timers.target

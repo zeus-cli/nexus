@@ -136,6 +136,19 @@ def build_parser() -> argparse.ArgumentParser:
     diagnostic_run.add_argument("action_id")
     diagnostic_run.add_argument("--approval-id", help="aproveita uma solicitação HITL já aprovada")
 
+    scheduler = subparsers.add_parser("scheduler", help="tarefas agendadas em background")
+    sched_sub = scheduler.add_subparsers(dest="scheduler_command", required=True)
+    sched_sub.add_parser("list", help="lista tarefas agendadas")
+    sched_add = sched_sub.add_parser("add", help="agenda tarefa de automação ou cognitiva")
+    sched_add.add_argument("--name", required=True)
+    sched_add.add_argument("--kind", required=True, choices=("automation", "cognitive"))
+    sched_add.add_argument("--target", required=True, help="action_id (automation) ou prompt (cognitive)")
+    sched_add.add_argument("--interval", type=float, default=None, help="segundos entre execuções (omitido = one-shot)")
+    sched_add.add_argument("--id", default=None, help="task_id opcional")
+    sched_cancel = sched_sub.add_parser("cancel", help="cancela tarefa agendada")
+    sched_cancel.add_argument("task_id")
+    sched_sub.add_parser("history", help="histórico de execuções do agendador")
+
     approvals = subparsers.add_parser("approvals", help="lista e decide solicitações HITL")
     approvals_sub = approvals.add_subparsers(dest="approvals_command", required=True)
     approvals_sub.add_parser("list", help="lista solicitações pendentes")
@@ -143,6 +156,24 @@ def build_parser() -> argparse.ArgumentParser:
     approval_approve.add_argument("request_id")
     approval_deny = approvals_sub.add_parser("deny", help="nega uma solicitação")
     approval_deny.add_argument("request_id")
+
+    identity = subparsers.add_parser("identity", help="administra identidades locais")
+    identity_sub = identity.add_subparsers(dest="identity_command", required=True)
+    identity_init = identity_sub.add_parser(
+        "init", help="cria o owner local a partir do token da API (idempotente)"
+    )
+    identity_init.add_argument("--name", default="Owner", help="nome exibido do owner")
+    identity_sub.add_parser("status", help="mostra o owner local vinculado ao token")
+    identity_list = identity_sub.add_parser("list", help="lista principals")
+    identity_list.add_argument(
+        "--kind", choices=("user", "device", "agent", "service")
+    )
+    identity_list.add_argument(
+        "--status", choices=("active", "suspended", "revoked")
+    )
+    identity_revoke = identity_sub.add_parser("revoke", help="revoga um principal")
+    identity_revoke.add_argument("principal_id")
+    identity_revoke.add_argument("--reason", default="revogado pela CLI")
 
     token = subparsers.add_parser("token", help="gerencia o token local da API")
     token_sub = token.add_subparsers(dest="token_command", required=True)
@@ -681,6 +712,48 @@ def _cmd_diagnostics_list(runtime: NexusRuntime, args: argparse.Namespace) -> in
     return 0
 
 
+def _cmd_scheduler_list(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    sched = runtime.scheduler
+    items = sched.list_tasks() if sched else []
+    if args.json:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+    else:
+        if not items:
+            print("nenhuma tarefa agendada")
+        for item in items:
+            state = "ativa" if item["enabled"] else "pausada"
+            print(f"{item['task_id']}  {item['name']}  {item['kind']}:{item['target']}  {state}")
+    return 0
+
+
+def _cmd_scheduler_add(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    task_id = runtime.scheduler.schedule(
+        name=args.name, kind=args.kind, target=args.target,
+        interval_s=args.interval, task_id=args.id,
+    )
+    if args.json:
+        print(json.dumps({"task_id": task_id}, ensure_ascii=False))
+    else:
+        print(f"tarefa agendada: {task_id}")
+    return 0
+
+
+def _cmd_scheduler_cancel(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    from .scheduler import TaskNotFound
+    try:
+        runtime.scheduler.cancel(args.task_id)
+    except TaskNotFound as exc:
+        print(f"erro: {exc}", file=sys.stderr)
+        return 1
+    print(f"tarefa cancelada: {args.task_id}")
+    return 0
+
+
+def _cmd_scheduler_history(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    print(json.dumps(runtime.scheduler.get_history(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _cmd_diagnostics_run(runtime: NexusRuntime, args: argparse.Namespace) -> int:
     try:
         result = asyncio.run(
@@ -742,6 +815,151 @@ def _cmd_approvals_approve(runtime: NexusRuntime, args: argparse.Namespace) -> i
 
 def _cmd_approvals_deny(runtime: NexusRuntime, args: argparse.Namespace) -> int:
     return _decide_approval(runtime, args, approve=False)
+
+
+def _identity_client(runtime: NexusRuntime):
+    from .control_plane import ControlPlaneClient
+
+    config = runtime.config
+    socket_path = (
+        config.control_plane.socket_path
+        or config.paths.data_dir / "run" / "nexus-daemon.sock"
+    )
+    return ControlPlaneClient(socket_path, timeout=config.control_plane.timeout_s)
+
+
+def _identity_token(runtime: NexusRuntime):
+    from .api.auth import resolve_token
+
+    return resolve_token(runtime.config)
+
+
+def _identity_owner(client, token: str) -> dict[str, Any] | None:
+    status = client.identity_owner_status(token)
+    if not status["initialized"]:
+        print(
+            "identidade não inicializada; rode `nexus identity init`",
+            file=sys.stderr,
+        )
+        return None
+    principal = status["principal"]
+    return dict(principal) if principal is not None else None
+
+
+def _cmd_identity_init(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    info = _identity_token(runtime)
+    with _identity_client(runtime) as client:
+        result = client.identity_init_owner(info.token, display_name=args.name)
+    principal = result["principal"]
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "principal": principal,
+                    "credential_id": result["credential_id"],
+                    "created_principal": result["created_principal"],
+                    "created_credential": result["created_credential"],
+                    "token_source": info.source,
+                    "token_path": str(info.path) if info.path else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    _row("owner", f"{principal['display_name']} · {principal['id']}")
+    _row("credencial", result["credential_id"])
+    _row(
+        "bootstrap",
+        "criado" if result["created_principal"] else "reutilizado (idempotente)",
+    )
+    token_label = info.source + (f" · {info.path}" if info.path else "")
+    _row("token", token_label)
+    return 0
+
+
+def _cmd_identity_status(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    info = _identity_token(runtime)
+    with _identity_client(runtime) as client:
+        status = client.identity_owner_status(info.token)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "initialized": status["initialized"],
+                    "principal": status["principal"],
+                    "credential_id": status["credential_id"],
+                    "token_source": info.source,
+                    "token_path": str(info.path) if info.path else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if not status["initialized"]:
+        _row("identidade", "não inicializada (rode `nexus identity init`)")
+        return 0
+    principal = status["principal"]
+    _row("owner", f"{principal['display_name']} · {principal['id']}")
+    _row("papel", principal["role_id"])
+    _row("status", principal["status"])
+    _row("credencial", status["credential_id"])
+    _row("token", info.source + (f" · {info.path}" if info.path else ""))
+    return 0
+
+
+def _cmd_identity_list(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    info = _identity_token(runtime)
+    with _identity_client(runtime) as client:
+        owner = _identity_owner(client, info.token)
+        if owner is None:
+            return 1
+        principals = client.identity_list(
+            owner["id"], kind=args.kind, status=args.status
+        )
+    if args.json:
+        print(json.dumps(principals, ensure_ascii=False, indent=2))
+        return 0
+    if not principals:
+        print("nenhum principal")
+        return 0
+    for item in principals:
+        _row(
+            item["id"],
+            f"{item['kind']} · {item['role_id']} · {item['status']} · "
+            f"{item['display_name']}",
+        )
+    print(f"{len(principals)} principal(is)")
+    return 0
+
+
+def _cmd_identity_revoke(runtime: NexusRuntime, args: argparse.Namespace) -> int:
+    info = _identity_token(runtime)
+    with _identity_client(runtime) as client:
+        owner = _identity_owner(client, info.token)
+        if owner is None:
+            return 1
+        if args.principal_id == owner["id"]:
+            print(
+                "erro: não revogue o owner local pela CLI; a recuperação exige "
+                "acesso físico e `nexus identity recover --owner`",
+                file=sys.stderr,
+            )
+            return 1
+        summary = client.identity_revoke_principal(
+            owner["id"], args.principal_id, args.reason
+        )
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+    _row("principal", args.principal_id)
+    _row("principals", summary["principals"])
+    _row("credenciais", summary["credentials"])
+    _row("devices", summary["devices"])
+    _row("aprovações", summary["approvals"])
+    _row("sessões de pairing", summary["pairing_sessions"])
+    return 0
 
 
 def _cmd_token(runtime: NexusRuntime, args: argparse.Namespace) -> int:
@@ -976,6 +1194,14 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
                 return _cmd_diagnostics_list(runtime, args)
             if args.diagnostics_command == "run":
                 return _cmd_diagnostics_run(runtime, args)
+        if command == "scheduler":
+            handlers = {
+                "list": _cmd_scheduler_list,
+                "add": _cmd_scheduler_add,
+                "cancel": _cmd_scheduler_cancel,
+                "history": _cmd_scheduler_history,
+            }
+            return handlers[args.scheduler_command](runtime, args)
         if command == "approvals":
             handlers = {
                 "list": _cmd_approvals_list,
@@ -983,6 +1209,14 @@ def _dispatch(argv: Sequence[str] | None = None) -> int:
                 "deny": _cmd_approvals_deny,
             }
             return handlers[args.approvals_command](runtime, args)
+        if command == "identity":
+            handlers = {
+                "init": _cmd_identity_init,
+                "status": _cmd_identity_status,
+                "list": _cmd_identity_list,
+                "revoke": _cmd_identity_revoke,
+            }
+            return handlers[args.identity_command](runtime, args)
         if command == "token":
             return _cmd_token(runtime, args)
         if command == "events":

@@ -1,7 +1,7 @@
 # NEXUS Master Architecture
 
-**Versão:** 1.6
-**Atualizado:** 2026-11-14
+**Versão:** 1.7
+**Atualizado:** 2026-11-20
 **Projeto:** NEXUS — Cognitive Operating System (local-first, híbrido Rust + Python)  
 **Classificação:** Arquitetura autoritativa — descreve o estado REAL do sistema (não apenas o desejado)
 
@@ -13,18 +13,22 @@ NEXUS é um sistema operacional cognitivo local-first organizado em seis planos 
 
 | Plano | Linguagem | Responsabilidade | Estado |
 |-------|-----------|------------------|--------|
-| **Control Plane** | Rust | Autoridade operacional: daemon, ciclo de vida, IPC, segurança determinística | **Parcial** (nexus-daemon v0.1.0 implementado; partes em Python) |
+| **Control Plane** | Rust | Autoridade operacional: daemon, ciclo de vida, IPC, segurança determinística | **Implementado no código; operação pendente** (T6 autoritativo é opt-in; T7 no Acer aberto) |
 | **Cognitive Plane** | Python | Interpretação de objetivos, raciocínio, plano, memória, roteamento de modelos | **Parcial** (nexus_core v0.2.0 + 6 motores cognitivos da Fase 2 + Knowledge Graph persistente) |
 | **Intelligence Plane** | Python | Multi-agente: registry, runtime, orquestrador, colaboração, revisão adversária | **Implementado** (Fase 4) |
 | **Simulation Plane** | Python | Simulação universal: mundos, entidades, regras, clock, scheduler, cenários, experimentos, métricas, análise | **Parcial** (Fase 5: tipos base, clock, state manager, rules engine, event scheduler, world builder, scenario manager, metrics, analyzer, results store) |
-| **Execution Plane** | Python | Tool registry, automação, sandbox, adaptadores (FS/Process/Network/…) | **Parcial** (7 ferramentas de diagnóstico somente-leitura + Execution Gate, Tool Registry, Rollback Manager, SudoBroker, Execution Journal da Fase 3) |
+| **Execution Plane** | Python | Tool registry, automação, sandbox e adaptadores | **Parcial** (gate e controles implementados; catálogo tem 7 ferramentas somente-leitura) |
 | **Distributed & Adaptive Plane** | Python | Multi-nó, agendamento distribuído, gerenciamento avançado de recursos, consolidação de experiência, autoaperfeiçoamento controlado | **Parcial** (Fase 7: nós, node manager, resource monitor, task scheduler, experience consolidation, self-improvement) |
 
 Os três sistemas (MIND, WORLD, OS) compartilham identidade, memória, contratos de evento, políticas de segurança e contexto operacional.
 
 ---
 
-## 2. Topologia Atual (estado real)
+## 2. Topologia implementada (estado real)
+
+O runtime local e a autoridade opcional do daemon são os componentes ativos do
+desenho de software. A topologia doméstica com POCO, Xiaomi e Moto G34 ainda é
+alvo de T8–T18; nenhum desses clientes está pareado atualmente.
 
 ```
 USUÁRIO / CLI / TUI / WEB HUD
@@ -45,7 +49,11 @@ NEXUS API (FastAPI) ─► NEXUS COGNITIVE CORE (Python)
 NEXUS SENTINEL (Rust, core-rust) ─► /proc telemetry + fs watch
 ```
 
-**Novo (Fase 1):** `core/nexus-daemon/` (Rust, Tokio) — Control Plane em construção:
+**Histórico do daemon (Fase 1–T4):** `core/nexus-daemon/` (Rust, Tokio).
+> A descrição e o estado dos componentes abaixo registram entregas iniciais. O
+> estado atual do daemon é o T6 descrito na seção 13: store persistente,
+> recuperação de órfãos e autoridade final opt-in. A validação operacional
+> continua no T7.
 * barramento de eventos (memória) + store SQLite WAL com dedup;
 * servidor IPC sobre Unix Domain Socket (protocolo JSON por linha, compatível com o sentinel), com handshake `Hello`/`Welcome`, autenticação por `SO_PEERCRED`/UID e soquete `0600` (T4);
 * comandos de controle `Authorize`, `ApprovalRequest`, `ApprovalDecision`, `ApprovalStatus`, `ApprovalRevoke`, `Health` e `Event`, com timeout de handshake, limite de frame e versão de protocolo `1.0.0`;
@@ -64,6 +72,7 @@ Componentes: Nexus Daemon, System Supervisor, Identity Manager, Policy Engine, E
 * Não depende de LLM para segurança.
 * Decisões de autorização determinísticas, explícitas e verificáveis.
 * Contratos de wire v1.0.0 congelados em `contracts/` (evento, autorização, aprovação, resultado de execução e tool spec), com schemas JSON Schema 2020-12 e fixtures validados por Python e Rust. O módulo Rust de contratos é usado em produção pelo IPC de controle desde o T4.
+* Desde o T6, o Approval Manager Rust persiste aprovações e execuções em `data/databases/nexus_approvals.db` (SQLite WAL, `0600`), expõe histórico/paginação e produz o ciclo `CLAIMED → CONSUMED`. Quando `[control_plane] enabled = true`, o daemon é a autoridade final de política, aprovação e consumo; sem o daemon a execução é negada (fail-closed). O modo local continua o padrão.
 
 ### Cognitive Plane (Python)
 Componentes: Cognitive Core, Intent Engine, Context Engine, Reasoning Engine, Knowledge Engine, Decision Engine, Planner, Reflection Engine, LLM Router, Memory Manager.
@@ -127,7 +136,7 @@ Componentes: World Builder, World Registry, Entity Manager, State Manager, Rules
 
 Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime, adaptadores (Filesystem, Process, Network, Browser, Application, API, Developer Tools).
 * Todas as operações do mundo real devem passar pelo Control Plane.
-* **Estado atual:** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O gate é obrigatório no caminho do runtime Python; a autoridade ainda é Python e a migração para o daemon Rust é T6 (TD-015 resolvido; T4/T5 entregaram superfície e paridade, sem mover a autoridade final).
+* **Estado atual (T6):** o `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine`/`ApprovalManager` do runtime e o injeta no `AutomationEngine`. Toda execução de ferramenta passa por `authorize → executar → commit`, com auditoria de autorização e conclusão. O modo local permanece o padrão. Com `[control_plane] enabled = true`, identidade e capacidade continuam no Python, mas política, criação/claim de aprovação e produção de `CLAIMED → CONSUMED` são decididos pelo daemon Rust via IPC; falha do daemon nega a execução (TD-015 resolvido; T4/T5 entregaram superfície e paridade; T6 moveu a autoridade final de forma opt-in).
 
 **Componentes de Secure Agency da Fase 3 (implementados e testados):**
 
@@ -139,7 +148,7 @@ Componentes: Tool Registry, Automation Engine, Execution Engine, Sandbox Runtime
 | SudoBroker | `nexus_core/sudo_broker.py` | Mediação de execuções com privilégios elevados; aprovação vinculada à operação exata; proteção contra replay e parameter swapping |
 | Execution Journal | `nexus_core/execution_journal.py` | Journal imutável e auditável de execuções (SHA-256 integrity_hash por entrada) |
 
-O `Automation Engine` (`automation.py`) executa as ferramentas com HITL, policy gating e sandbox bwrap. Ele consulta o `ExecutionGate` antes de qualquer execução e fecha o ciclo com `commit()`; o gate não reexecuta a operação. O ciclo `authorize → executar → commit` é o contrato que será mantido quando a autoridade migrar para o Rust.
+O `Automation Engine` (`automation.py`) executa as ferramentas com HITL, policy gating e sandbox bwrap. Ele consulta o `ExecutionGate` antes de qualquer execução e fecha o ciclo com `commit()`; o gate não reexecuta a operação. O ciclo `authorize → executar → commit` é o contrato mantido quando a autoridade migra para o Rust; no modo autoritativo, o Python não cria aprovação local e o `begin_execution` confirma `CLAIMED → CONSUMED` no daemon antes do lançamento.
 
 ### Distributed & Adaptive Plane
 Componentes: Node Manager, Distributed Resource Monitor, Distributed Task Scheduler, Experience Consolidation Engine, Self-Improvement Engine, **Integration Layer**.
@@ -214,6 +223,9 @@ Gaps principais em relação ao alvo: GTK4 GUI, perfis de recurso implementados 
 ---
 
 ## 8. Estado de validação e hardening (2026-11-12)
+
+> Snapshot da auditoria em 2026-11-12. Os estados e lacunas dessa seção são
+> históricos; consulte as seções 13–15 para atualizações de T6–T8.
 
 A auditoria de 2026-11-12 corrigiu defeitos reais sem alterar os contratos públicos:
 
@@ -304,6 +316,8 @@ continua com achados pré-existentes.
 
 ## 11. T4 — IPC de controle no daemon Rust (2026-11-14)
 
+> Registro da entrega T4. A situação atual do daemon está descrita na seção 13.
+
 O T4 transformou o IPC do daemon em uma superfície de controle local sem mover
 a autoridade final de segurança:
 
@@ -349,6 +363,9 @@ limpos nos arquivos do T4; o `ruff` global continua com achados pré-existentes.
 
 ## 12. T5 — Paridade de Policy Engine e Approval Manager (2026-11-14)
 
+> Snapshot ao fim do T5. A persistência e a autoridade final foram entregues
+> depois, no T6; consulte a seção 13 para o estado atual.
+
 O T5 fecha a paridade de decisão e de ciclo de vida entre Python e Rust, ainda
 sem mover a autoridade final:
 
@@ -380,11 +397,67 @@ testes. `compileall`, `git diff --check` e `ruff` nos arquivos do T5 limpos.
 
 ---
 
-## 13. Próximos passos do roadmap
+## 13. T6 — Execution Gate autoritativo no Rust (2026-11-16)
 
-T6 — Execution Gate autoritativo no Rust. Antes de mover a autoridade, o T6
-precisa fechar persistência/histórico de aprovações, produção de `CONSUMED` pelo
-ciclo de execução, fail-closed quando o daemon estiver indisponível e teste com
-daemon morto. A autoridade de segurança só migra para o Rust depois desse gate;
-até lá, o Python continua sendo a autoridade efetiva e a API não deve ser
-exposta remotamente.
+O T6 moveu a autoridade final de execução para o daemon, mantendo o modo local
+como padrão e preservando o contrato `authorize → executar → commit`:
+
+* `ApprovalStore` persiste `approvals` e `executions` em
+  `data/databases/nexus_approvals.db` com o schema compartilhado do Python,
+  WAL, transações e permissão `0600`;
+* o bootstrap abre o store e recupera execuções órfãs; reiniciar o daemon não
+  apaga mais aprovações nem histórico;
+* o IPC ganhou `ApprovalList`, `ApprovalVerify`, `ApprovalClaim`,
+  `ApprovalExpire`, `ExecutionStart`, `ExecutionComplete`, `ExecutionStatus` e
+  `ExecutionRecover`; `ExecutionStart` produz `CLAIMED → CONSUMED` +
+  `STARTING` e `ExecutionComplete` grava o estado terminal;
+* `Authorize` com `approval_id` valida o hash canônico e faz
+  `APPROVED → CLAIMED` atomicamente, preservando a proteção contra replay e
+  parameter swapping;
+* `nexus_core/control_plane.py` adiciona `ControlPlaneClient` e
+  `RustApprovalManager`; em modo autoritativo o Python não abre o SQLite de
+  aprovações para escrita (sem dual-write) e usa apenas IPC;
+* `[control_plane] enabled = false` permanece o padrão. Com `enabled = true`,
+  identidade/capacidade continuam no Python, mas política, aprovação e consumo
+  são decididos pelo Rust. Falha em `authorize` retorna `DENIED`; falha em
+  `begin_execution`/`commit` impede ou interrompe a execução;
+* o `AutomationEngine` autoritativo não cria aprovação local: o
+  `REQUIRES_APPROVAL` traz o `approval_id` do daemon e o `begin_execution`
+  confirma `CLAIMED → CONSUMED` antes do runner;
+* bootstrap com daemon indisponível sobe degradado e `health()` publica
+  `control_plane.status = "unavailable"`, mantendo execuções negadas até o
+  daemon voltar.
+
+**Fora do escopo do T6:** TLS, token, rate limit, exposição remota do socket,
+outbox/offsets duráveis por assinante e identidade multi-host (T8–T10). A API
+continua local e o modo local continua sendo o padrão operacional.
+
+**Validação:** 516 testes + 12 subtests Python; `cargo test` no daemon com 86
+testes. `compileall`, `node --check` e `git diff --check` limpos nos arquivos do
+T6.
+
+---
+
+## 14. Estado operacional e próximos passos — 2026-11-20
+
+- **T7:** o Dell Inspiron 15 3511 é a estação de desenvolvimento; o Acer Nitro
+  V15 é o servidor alvo. O ADR 0022 registra decisões baseline. Units, script
+  de backup e runbook existem no workspace; inventário, instalação, rede,
+  GPU/Ollama e restore ainda precisam ser validados no Acer.
+- **T8:** catálogo, validação, `IdentityStore`, IPC e bootstrap/CLI local do
+  owner (T8.1–T8.4) estão implementados. Pairing completo, associação de
+  credenciais de dispositivo ao gate, rotas e painel seguem pendentes.
+- **T9–T20:** gateway autenticado, sincronização multi-dispositivo, namespaces,
+  personalidade, malha LLM, clientes, DR e expansão futura estão no roadmap.
+
+Não habilitar o modo autoritativo no servidor até o gate T7.6 do
+[`plano T7`](NEXUS_T7_EXECUTION_PLAN.md). Não expor o socket IPC pela rede.
+
+## 15. Registro de validação
+
+- A última execução completa registrada no ADR 0021 é do T6 (2026-11-16): 516
+  testes Python, 12 subtests e 86 testes Rust no daemon.
+- O ADR 0023 registra validações focadas de T8.1–T8.4, incluindo 134 testes
+  Rust e 109 testes Python na validação do T8.4.
+- Não há execução completa registrada após T8.4. Esses números são datados e
+  não descrevem uma execução da árvore de trabalho atual.

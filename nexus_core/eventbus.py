@@ -65,7 +65,7 @@ class EventBus:
         self._handler_timeout = handler_timeout
         self._subscriptions: list[Subscription] = []
         self._stats = BusStats()
-        self._logger = logger or logging.getLogger("zeus.eventbus")
+        self._logger = logger or logging.getLogger("nexus.eventbus")
 
     # -- assinaturas ---------------------------------------------------------
     def subscribe(self, pattern: str, handler: Handler) -> Subscription:

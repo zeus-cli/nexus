@@ -40,7 +40,7 @@ LLM_KINDS = ("ollama", "openai_compatible")
 LLM_TASKS = ("reasoning", "planning", "summary", "synthesis")
 _PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9_-]*$")
 
-_TOP_LEVEL_KEYS = ("nexus", "paths", "logging", "events", "api", "safety", "llm")
+_TOP_LEVEL_KEYS = ("nexus", "paths", "logging", "events", "api", "safety", "llm", "control_plane")
 
 
 class ConfigError(Exception):
@@ -77,6 +77,24 @@ class EventsConfig:
     dedup_window_hours: int = 24
     max_payload_bytes: int = 65_536
     query_limit: int = 500
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlaneConfig:
+    """Modo autoritativo do Execution Gate no daemon Rust (T6).
+
+    Desabilitado por padrão: o runtime Python continua sendo a autoridade
+    local. Quando habilitado, toda autorização de execução e todo o ciclo de
+    aprovação passam pelo IPC; sem daemon a execução é negada (fail-closed).
+    """
+
+    enabled: bool = False
+    socket_path: Path | None = None
+    timeout_s: float = 5.0
+
+    @property
+    def authoritative(self) -> bool:
+        return self.enabled
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +158,7 @@ class Config:
     api: ApiConfig
     safety: SafetyConfig
     llm: LlmConfig = field(default_factory=LlmConfig)
+    control_plane: ControlPlaneConfig = field(default_factory=ControlPlaneConfig)
     environment: str = "production"
     source: Path | None = None
 
@@ -174,6 +193,15 @@ class Config:
                 "host": self.api.host,
                 "port": self.api.port,
                 "token_file": str(self.api.token_file),
+            },
+            "control_plane": {
+                "enabled": self.control_plane.enabled,
+                "socket_path": (
+                    str(self.control_plane.socket_path)
+                    if self.control_plane.socket_path is not None
+                    else None
+                ),
+                "timeout_s": self.control_plane.timeout_s,
             },
             "llm": {
                 "max_context_tokens": self.llm.max_context_tokens,
@@ -288,6 +316,23 @@ def config_from_mapping(raw: Mapping[str, Any], *, source: Path | None = None,
         )
     safety_section = _section(raw, "safety", ("autonomy_level",))
 
+    control_plane_section = _section(
+        raw, "control_plane", ("enabled", "socket_path", "timeout_s")
+    )
+    control_plane_enabled = _as_bool(
+        control_plane_section.get("enabled", False), "control_plane.enabled"
+    )
+    control_plane_socket = (
+        _resolve(project_root, control_plane_section["socket_path"])
+        if "socket_path" in control_plane_section
+        else data_dir / "run" / "nexus-daemon.sock"
+    )
+    control_plane_timeout = _as_float(
+        control_plane_section.get("timeout_s", 5.0),
+        "control_plane.timeout_s",
+        minimum=0.1,
+    )
+
     raw_level = env.get(ENV_AUTONOMY_LEVEL, safety_section.get("autonomy_level", 0))
     try:
         autonomy_level = int(raw_level)
@@ -334,6 +379,11 @@ def config_from_mapping(raw: Mapping[str, Any], *, source: Path | None = None,
         ),
         safety=SafetyConfig(autonomy_level=autonomy_level),
         llm=_parse_llm(raw),
+        control_plane=ControlPlaneConfig(
+            enabled=control_plane_enabled,
+            socket_path=control_plane_socket,
+            timeout_s=control_plane_timeout,
+        ),
     )
 
 

@@ -80,7 +80,7 @@ class RealtimeHub:
         self._bus = bus
         self._queue_size = queue_size
         self._max_clients = max_clients
-        self._logger = logger or logging.getLogger("zeus.api.realtime")
+        self._logger = logger or logging.getLogger("nexus.api.realtime")
         self._clients: dict[str, HubClient] = {}
         self._subscription: Subscription | None = None
         self._stats = HubStats()

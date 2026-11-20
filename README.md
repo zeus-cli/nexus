@@ -1,149 +1,122 @@
-# NEXUS — Local-First Cognitive Operating System
+# NEXUS
 
-NEXUS is a production-grade, local-first Cognitive OS for Linux designed to bridge the gap between LLM reasoning and secure system automation. It transforms a diagnostic agent into a cognitive system capable of perceiving, planning, and executing complex tasks with mandatory human authorization for high-risk operations.
+Plataforma cognitiva local-first para Linux, escrita em Python e Rust. O
+repositório reúne raciocínio e planejamento, memória persistente, modelos locais,
+agentes e execução de ferramentas governada por política e aprovação humana.
 
-**State: Production-Ready Core, hardened by the 2026-11-12 audit.** The current suite has **494 tests passing (12 subtests)**, with hybrid semantic memory, a mandatory risk-based execution gate wired into the runtime, versioned Python ↔ Rust contracts, a single Event Fabric with transactional outbox/dead-letter in the EventStore database, an idempotent consumer and a local UDS bridge with versioned handshake and control commands (`authorize`, approval including revocation, `health`, `event`) to the Rust daemon, shared policy/approval parity fixtures, a persistent knowledge graph with provenance/confidence in the same governed SQLite, distributed WebSocket networking, and hardware-isolated sandboxing.
+## Estado do projeto — 2026-11-20
 
-## 🧠 Cognitive Architecture
+- O núcleo cognitivo, o Event Fabric, a memória híbrida, o Knowledge Graph, os
+  agentes, a simulação, a API local e o Web HUD estão implementados em diferentes
+  níveis de maturidade.
+- O T6 entrega o Execution Gate autoritativo no daemon Rust. O modo autoritativo
+  é opt-in e segue desativado por padrão em `config/nexus.toml`.
+- O T7 prepara o Acer Nitro V15 como servidor. O Dell Inspiron 15 3511 é a
+  estação de desenvolvimento; a implantação de serviços, rede, GPU/Ollama e
+  backup ainda precisa ser validada no Acer.
+- A fundação de identidade T8.1–T8.4 está no workspace. Pairing real dos
+  dispositivos, integração completa com o gate e clientes móveis ainda estão
+  pendentes.
+- O catálogo de automação atual tem sete ferramentas de diagnóstico somente
+  leitura. Ferramentas de escrita seguras são trabalho futuro.
 
-NEXUS operates on a closed-loop cognitive cycle:
-**Intent → Plan → Execute → Observe → Critique → Decide**
+O resumo completo está em [`docs/README.md`](docs/README.md), o progresso em
+[`ROADMAP.md`](ROADMAP.md) e a topologia real em
+[`docs/NEXUS_MASTER_ARCHITECTURE.md`](docs/NEXUS_MASTER_ARCHITECTURE.md).
 
-### Core Components
+## Arquitetura
 
-| Component | Responsibility | Key Technology |
-|---|---|---|
-| **Cognitive Core** | Manages the reasoning loop, task suspension, and state synthesis. | Asyncio / Reflective Loop |
-| **Cognitive Engines** | Intent, Context, Reasoning, Decision, Planner and Knowledge engines. | Python / structured JSON |
-| **Automation Engine** | Executes tools through a secure gate based on Risk Levels. | Tool Registry / Policy Engine |
-| **Policy Engine** | Deterministically evaluates if an action is `ALLOW`, `REQUIRE_APPROVAL`, or `DENY`. | Risk-Based Rules |
-| **Approval Manager** | Manages the HITL state machine with cryptographic binding. | SQLite / SHA-256 |
-| **Execution Gate** | Enforces identity → capability → policy → risk → approval → resource → execution → audit. | Python / Approval Manager |
-| **Sandbox Executor** | Isolates tool execution using namespace isolation and resource limits. | `bwrap` / Cgroups v2 |
-| **Hybrid Memory** | Combines lexical search (FTS5) and semantic search (LanceDB) using Reciprocal Rank Fusion. | SQLite / LanceDB |
-| **Knowledge Graph** | Persists nodes, edges, provenance, confidence and temporal validity in the governed SQLite; deterministic bounded traversal and no automatic simulation-to-fact promotion. | SQLite WAL |
-| **LLM Gateway** | Routes tasks across local/remote providers with retries, circuit breakers and context budgets. | Ollama / OpenAI-compatible |
-| **Event Fabric** | Persists events atomically with the EventStore, retries failed deliveries, dead-letters exhausted ones and exposes an idempotent-consumer/bridge boundary. | SQLite WAL / UDS / WebSocket |
-| **Shared Contracts** | Versioned JSON Schemas and fixtures validated by both Python and Rust. | JSON Schema 2020-12 / SHA-256 |
-| **Task Store** | Persists suspended cognitive states with atomic writes and integrity checksums. | Hardened JSON / SHA-256 |
-| **Sentinel** | Low-level system observation and metric collection. | Rust / Unix Sockets |
-| **Web HUD** | Command Center, agents, simulations, memory, models and security panels. | HTML / CSS / JS |
+O NEXUS mantém um runtime Python local para cognição e interfaces, com um daemon
+Rust para controle determinístico. SQLite é o armazenamento transacional
+principal; FTS5 e LanceDB sustentam a busca híbrida. O Ollama pode fornecer
+inferência local. O diagrama multi-dispositivo é o alvo de T7–T20, não uma
+implantação já validada.
 
-## 🛡️ Security Model
+O API FastAPI/WebSocket aceita apenas endereços de loopback e usa um token local.
+O daemon Rust assume a autoridade final quando `[control_plane] enabled = true`;
+falhas nesse modo negam execução. O token único da API ainda não representa
+identidades separadas por pessoa ou dispositivo.
 
-NEXUS follows a **Fail-Closed** design philosophy:
+Veja [`ARCHITECTURE.md`](ARCHITECTURE.md) para um resumo e a
+[arquitetura mestre](docs/NEXUS_MASTER_ARCHITECTURE.md) para detalhes por plano.
 
-1. **Risk Classification**: Every tool is assigned a `RiskLevel` (LOW, MEDIUM, HIGH, CRITICAL).
-2. **The Execution Gate**: No tool is executed without passing through identity, policy, risk and approval checks; authorized executions are closed with an audited `commit()`.
-3. **Cryptographic Binding**: Approvals are bound to a hash of the tool ID, parameters, task ID and scope, preventing "parameter swapping" attacks.
-4. **HITL Enforcement**: High-risk operations trigger a `TaskSuspended` state. The agent cannot approve its own actions. Expired approvals are rejected at claim time.
-5. **OS-Level Isolation**: Tools run in an unprivileged `bubblewrap` sandbox with restricted filesystem access, no network (unless specified), and strict CPU/RAM limits via `systemd-run`.
-6. **Data Egress Policy**: Privacy levels (`PUBLIC`, `PRIVATE`, `SECRET`) govern what may leave the machine. Remote LLM providers require explicit `authorized = true` and HTTPS.
-7. **SQLite Contention Safety**: Shared connections use `busy_timeout`, explicit commit/rollback and guaranteed close via `nexus_core/sqlite_utils.py`.
+## Requisitos e instalação local
 
-## 🚀 Quick Start
+- Linux
+- Python 3.11 ou superior
+- Rust toolchain para compilar daemon e sentinel
+- `bubblewrap` para execução isolada de ferramentas
+- Ollama opcional para inferência local
 
-### Installation (Linux)
 ```bash
-cd nexus
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-# Install bubblewrap for sandboxing
-sudo apt-get install bubblewrap
+python -m nexus_core status
 ```
 
-### Basic Usage
+Para iniciar a API local:
+
 ```bash
-# Start the API and Cognitive Core
 python -m nexus_core serve
-
-# Launch the TUI for system monitoring and approval management
-python -m nexus_core tui
-
-# Run a specific cognitive task
-python -m nexus_core task run --prompt "Analyze system logs and suggest optimizations"
-
-# Check configured LLM providers and models
-python -m nexus_core llm models
-
-# Request a completion without executing the answer
-python -m nexus_core llm complete --prompt "Responda apenas: ok" --max-tokens 16
 ```
 
-## 🤖 LLM Configuration
+O token da API é criado em `data/secrets/api_token` quando necessário. Consulte
+[`SECURITY.md`](SECURITY.md) antes de habilitar execução de ferramentas ou
+provedores remotos.
 
-The local `config/nexus.toml` chain uses the models actually present in the local Ollama instance:
-
-```toml
-[[llm.providers]]
-name = "ollama-local"
-kind = "ollama"
-base_url = "http://127.0.0.1:11434"
-models = ["nexusorbe-llama3.1:latest", "nexusorbe-llama3.2:latest"]
-authorized = true
-
-[[llm.chain]]
-provider = "ollama-local"
-model = "nexusorbe-llama3.1:latest"
-
-[[llm.chain]]
-provider = "ollama-local"
-model = "nexusorbe-llama3.2:latest"
-```
-
-Remote providers belong in a separate deployment decision: NEXUS only accepts them with `authorized = true` and HTTPS. OpenCode is an external tool and is not part of the NEXUS security boundary; in the current environment it uses two remote Ollama models (`gemma4:e4b-it-q4_K_M` as default and `qwen3:4b` as a read-only subagent) with a 4096-token context limit.
-
-## 🌐 API & Interfaces
-
-### Approval API
-The `ApprovalAPI` allows humans to manage pending requests:
-- `GET /api/v1/approvals/pending`: List all tasks awaiting authorization.
-- `GET /api/v1/approvals/{id}`: Inspect tool parameters and risk justification.
-- `POST /api/v1/approvals/{id}/decide`: Approve or deny with `{"decision": "approve" | "deny" | "revoke"}`.
-- `GET /api/v1/approvals/history`: Audit trail of all human decisions.
-
-### Other Interfaces
-- **CLI**: Operational administration, diagnostics, memory, tasks, approvals, events and database maintenance.
-- **TUI**: High-density terminal interface for real-time event monitoring and HITL decisions.
-- **Web Dashboard**: Command Center, tasks, memory, events, models, diagnostics, agents, simulations, security and logs.
-- **API**: Loopback-only FastAPI server with Bearer token auth and scope-based autonomy.
-
-## 🛠️ Development & Testing
-
-NEXUS maintains a rigorous testing suite covering the entire security chain:
+## Comandos úteis
 
 ```bash
-# Run the full suite (494 tests, 12 subtests)
-pytest tests/
-
-# Verify the E2E HITL flow (Request -> Suspension -> Approval -> Execution)
-pytest tests/test_e2e_security.py
-
-# Static validation
-python -m compileall -q nexus_core tests
-node --check nexus_core/web/app.js
-git diff --check
+python -m nexus_core --help
+python -m nexus_core status
+python -m nexus_core llm models
+python -m nexus_core task run --prompt "Analise os logs e sugira melhorias"
 ```
 
-The full suite takes about 2 minutes on the target host. Running `test_hybrid_memory.py` in isolation can hit the 5 s embedding-load timeout on a cold `sentence_transformers` import; the full suite warms that import in an earlier test.
+O arquivo `config/nexus.toml` é um exemplo de configuração local. Confira quais
+tags estão instaladas no Ollama do host antes de usar a cadeia configurada. O
+provedor remoto de exemplo vem desabilitado e sem credenciais.
 
-## 📉 Performance Baseline
-- **Target Hardware**: Intel Low-Power CPU, 12 GB RAM.
-- **Memory**: Optimized for low-idle footprint; LanceDB provides efficient vector indexing without heavy external dependencies.
-- **Latency**: Sub-millisecond policy evaluation; minimal overhead from `bwrap` namespaces.
-- **Measured (2026-11-12)**: full suite ~129 s; local 8B Ollama completion ~12 s for 16 output tokens; remote OpenCode Gemma ~28 s and Qwen ~107 s per short agent run.
+## Dados e segurança
 
-See `PERFORMANCE_BASELINE.md` for details and caveats.
+- A API escuta em `127.0.0.1:8765`; não há TLS nem autenticação de dispositivo
+  para acesso remoto nesta etapa.
+- Aprovações são vinculadas à ação e consumidas antes da execução para impedir
+  replay. A execução passa pelo gate, política e trilha de auditoria.
+- O daemon usa IPC local por Unix Domain Socket. Não exponha esse socket pela
+  rede.
+- Provedores LLM remotos exigem HTTPS e `authorized = true`; a política de
+  egress considera os níveis `PUBLIC`, `PRIVATE` e `SECRET`.
+- O armazenamento padrão é local. Criptografia do Task Store é opcional e deve
+  ser configurada explicitamente.
 
-## 📚 Documentation
+## Desenvolvimento e validação
 
-| Document | Purpose |
+```bash
+pytest tests/
+cargo test --manifest-path core/nexus-daemon/Cargo.toml
+cargo test --manifest-path core-rust/Cargo.toml
+```
+
+A última execução completa documentada no ADR 0021 (T6, 2026-11-16) registrou
+516 testes Python, 12 subtests e 86 testes Rust no daemon. Essa contagem é um
+baseline histórico: as alterações T8 posteriores ainda precisam de uma
+execução completa no Acer antes de o T7 ser fechado. Consulte
+[`docs/README.md`](docs/README.md) para distinguir resultados históricos de
+validações atuais.
+
+## Documentação
+
+| Documento | Conteúdo |
 |---|---|
-| `ARCHITECTURE.md` | Concise architecture overview |
-| `docs/NEXUS_MASTER_ARCHITECTURE.md` | Authoritative architecture and plane definitions |
-| `docs/NEXUS_ARCHITECTURE_DECISIONS.md` | ADR index |
-| `docs/NEXUS_TECHNICAL_DEBT.md` | Detailed technical-debt register |
-| `docs/audit/NEXUS_REPOSITORY_AUDIT.md` | Historical repository audit + 2026-11-12 update |
-| `SECURITY.md` | HITL and execution security rules |
-| `ROADMAP.md` | Engineering roadmap and current status |
+| [`docs/README.md`](docs/README.md) | Índice e estado resumido |
+| [`ROADMAP.md`](ROADMAP.md) | Entregas e dependências |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Arquitetura resumida |
+| [`docs/NEXUS_MASTER_ARCHITECTURE.md`](docs/NEXUS_MASTER_ARCHITECTURE.md) | Estado real por plano |
+| [`docs/NEXUS_ARCHITECTURE_DECISIONS.md`](docs/NEXUS_ARCHITECTURE_DECISIONS.md) | Índice de ADRs |
+| [`docs/NEXUS_TECHNICAL_DEBT.md`](docs/NEXUS_TECHNICAL_DEBT.md) | Dívida técnica detalhada |
+| [`docs/NEXUS_T7_EXECUTION_PLAN.md`](docs/NEXUS_T7_EXECUTION_PLAN.md) | Plano de host e rede |
+| [`docs/runbooks/T7_VALIDATION.md`](docs/runbooks/T7_VALIDATION.md) | Validação operacional do T7 no Acer |
+| [`docs/NEXUS_T8_IDENTITY_DESIGN.md`](docs/NEXUS_T8_IDENTITY_DESIGN.md) | Identidade e permissões |
+| [`SECURITY.md`](SECURITY.md) | Controles e riscos residuais |

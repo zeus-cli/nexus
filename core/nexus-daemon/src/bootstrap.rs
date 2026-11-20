@@ -1,12 +1,16 @@
+use crate::approval::{
+    ApprovalManager, DEFAULT_APPROVAL_TTL_SECONDS, DEFAULT_ORPHAN_TIMEOUT_SECONDS,
+};
 use crate::config::Config;
 use crate::events::{EventFabric, EventStore};
 use crate::health::check::HealthChecker;
+use crate::identity::IdentityStore;
 use crate::resources::monitor::ResourceMonitor;
 use crate::security::SecurityGuard;
 use crate::supervisor::Supervisor;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 
 /// Contexto completo do runtime do daemon (espelho do `NexusRuntime` Python).
 pub struct DaemonRuntime {
@@ -21,6 +25,9 @@ pub struct DaemonRuntime {
     pub supervisor: Arc<Supervisor>,
     pub security: Arc<Mutex<SecurityGuard>>,
     pub resources: ResourceMonitor,
+    pub approvals: Arc<ApprovalManager>,
+    #[allow(dead_code)] // consumido pelo IPC/CLI de identidade no T8.3
+    pub identity: Arc<IdentityStore>,
     pub started_at: std::time::SystemTime,
 }
 
@@ -60,18 +67,47 @@ pub async fn bootstrap(config_path: &Path) -> Result<DaemonRuntime, BootstrapErr
         .map_err(BootstrapError::Logging)?;
     info!(component = "bootstrap", "logging estruturado inicializado");
 
-    // 3. Event store (SQLite WAL)
-    let db_path = Path::new(&config.paths.data_dir)
-        .join("databases")
-        .join("nexus_daemon_events.db");
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| BootstrapError::Io(e.to_string()))?;
-    }
+    // 3. Event store (SQLite WAL) e approvals persistentes (SQLite WAL)
+    let databases_dir = Path::new(&config.paths.data_dir).join("databases");
+    std::fs::create_dir_all(&databases_dir).map_err(|e| BootstrapError::Io(e.to_string()))?;
+    let db_path = databases_dir.join("nexus_daemon_events.db");
     let store = EventStore::open(&db_path).map_err(BootstrapError::Store)?;
     info!(
         component = "bootstrap",
         db = %db_path.display(),
         "event store aberto"
+    );
+
+    let approvals_path = databases_dir.join("nexus_approvals.db");
+    let approvals = Arc::new(
+        ApprovalManager::open(&approvals_path, DEFAULT_APPROVAL_TTL_SECONDS)
+            .map_err(|error| BootstrapError::Approvals(error.to_string()))?,
+    );
+    let recovered = approvals.recover_orphans(DEFAULT_ORPHAN_TIMEOUT_SECONDS);
+    info!(
+        component = "bootstrap",
+        db = %approvals_path.display(),
+        recovered_orphans = recovered,
+        "approval store aberto"
+    );
+    if recovered > 0 {
+        warn!(
+            component = "bootstrap",
+            recovered_orphans = recovered,
+            "execuções órfãs foram marcadas como UNKNOWN"
+        );
+    }
+
+    let identity = Arc::new(
+        IdentityStore::open(&approvals_path)
+            .map_err(|error| BootstrapError::Identity(error.to_string()))?,
+    );
+    info!(
+        component = "bootstrap",
+        db = %approvals_path.display(),
+        catalog_version = %identity.catalog().catalog_version,
+        schema_version = identity.schema_version().unwrap_or(-1),
+        "identity store aberto"
     );
 
     // 4. Barramento, health, supervisor, segurança
@@ -99,6 +135,8 @@ pub async fn bootstrap(config_path: &Path) -> Result<DaemonRuntime, BootstrapErr
         supervisor,
         security,
         resources,
+        approvals,
+        identity,
         started_at: std::time::SystemTime::now(),
     })
 }
@@ -111,6 +149,10 @@ pub enum BootstrapError {
     Logging(String),
     #[error("event store: {0}")]
     Store(rusqlite::Error),
+    #[error("approvals: {0}")]
+    Approvals(String),
+    #[error("identity: {0}")]
+    Identity(String),
     #[error("IO: {0}")]
     Io(String),
 }
@@ -123,24 +165,34 @@ mod tests {
     async fn bootstrap_creates_runtime() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("nexus.toml");
+        let data_dir = dir.path().join("data");
         std::fs::write(
             &config_path,
-            r#"
+            format!(
+                r#"
 [nexus]
 name = "NEXUS"
 
 [paths]
-data_dir = "data"
+data_dir = "{}"
 
 [logging]
 level = "INFO"
 json = true
 
 [ipc]
-socket_path = "data/run/nexus-daemon.sock"
+socket_path = "{}"
 "#,
+                data_dir.display(),
+                data_dir.join("run/nexus-daemon.sock").display()
+            ),
         )
         .unwrap();
-        let _rt = bootstrap(&config_path).await.unwrap();
+        let runtime = bootstrap(&config_path).await.unwrap();
+        assert!(data_dir.join("databases/nexus_approvals.db").is_file());
+        assert_eq!(runtime.approvals.len(), 0);
+        assert_eq!(runtime.identity.count_principals().unwrap(), 0);
+        assert_eq!(runtime.identity.schema_version().unwrap(), 2);
+        assert_eq!(runtime.identity.catalog().roles.len(), 4);
     }
 }

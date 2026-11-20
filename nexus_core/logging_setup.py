@@ -2,7 +2,7 @@
 
 Um único ponto de configuração: arquivo rotativo (JSON por padrão) + console.
 Uso: ``configure_logging(config.logging, config.paths.log_file)`` e depois
-``get_logger("memory")`` para obter ``zeus.memory``.
+``get_logger("memory")`` para obter ``nexus.memory``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 from .config import LoggingConfig
 from .privatefs import ensure_private_file
 
-LOGGER_ROOT = "zeus"
+LOGGER_ROOT = "nexus"
 
 _RESERVED_FIELDS = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
     "message",
@@ -75,7 +75,7 @@ class PrivateRotatingFileHandler(RotatingFileHandler):
 
 def configure_logging(cfg: LoggingConfig, log_file: Path | None, *,
                       console: bool = True) -> logging.Logger:
-    """Configura o logger raiz ``zeus`` de forma idempotente."""
+    """Configura o logger raiz ``nexus`` de forma idempotente."""
     root = logging.getLogger(LOGGER_ROOT)
     root.setLevel(cfg.level)
     root.propagate = False
@@ -106,5 +106,5 @@ def configure_logging(cfg: LoggingConfig, log_file: Path | None, *,
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Retorna ``zeus.<name>`` (nunca o logger raiz da aplicação)."""
+    """Retorna ``nexus.<name>`` (nunca o logger raiz da aplicação)."""
     return logging.getLogger(f"{LOGGER_ROOT}.{name}")

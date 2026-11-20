@@ -1,8 +1,11 @@
 [Unit]
 Description=NEXUS — camada cognitiva local-first (núcleo)
 Documentation=file:///home/nexus/Documentos/nexus/README.md
-After=network-online.target
-Wants=network-online.target
+# O daemon Rust é opcional no modo local ([control_plane] enabled = false),
+# por isso Wants (soft dependency): o core sobe degradado e fail-closed se o
+# daemon estiver indisponível.
+After=network-online.target nexus-daemon.service
+Wants=network-online.target nexus-daemon.service
 
 [Service]
 Type=simple

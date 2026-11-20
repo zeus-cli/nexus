@@ -1,11 +1,24 @@
 # NEXUS Architecture Decisions
 
-**Versão:** 1.6
-**Atualizado:** 2026-11-14
+**Versão:** 1.7
+**Atualizado:** 2026-11-20
 **Projeto:** NEXUS — Cognitive Operating System  
 **Escopo:** Registro de decisões arquiteturais (ADRs) — contexto, problema, alternativas, decisão, consequências, implicações de segurança e migração.
 
-> **Nota:** os ADRs 0001–0013 são registros históricos e preservam as contagens de testes da data original. O ADR 0014 consolida o endurecimento da auditoria de 2026-11-12. O ADR 0015 registra a ligação do Execution Gate ao runtime e o contrato `authorize → executar → commit` (T0). O ADR 0016 congela os contratos Python ↔ Rust v1.0.0 (T1). O ADR 0017 torna o Event Fabric uma porta única, com outbox no mesmo SQLite do EventStore, consumidor idempotente e bridge IPC Python ↔ Rust (T2). O ADR 0018 persiste o Knowledge Graph no mesmo SQLite, com proveniência, confiança, validade e bloqueio de promoção de simulação a fato (T3). O ADR 0019 adiciona o IPC de controle no daemon Rust, com handshake versionado, autenticação local por `SO_PEERCRED`, comandos de autorização/aprovação e aprovação de uso único em memória (T4). O ADR 0020 fecha a paridade de Policy Engine e Approval Manager no Rust, com revogação, TTL por solicitação, consumo `CLAIMED → CONSUMED` e fixtures compartilhados de decisão e ciclo de vida (T5).
+> **Como usar este índice:** cada título abre o ADR completo em `docs/adr/`.
+> Os ADRs 0001–0013 preservam o contexto e as contagens da data original.
+> Consulte `ROADMAP.md` e a arquitetura mestre para o estado atual.
+
+Os registros recentes acompanham as entregas por etapa:
+
+- **T0–T1 (ADR 0015–0016):** Execution Gate no runtime e contratos Python ↔ Rust.
+- **T2–T5 (ADR 0017–0020):** Event Fabric, Knowledge Graph, IPC e paridade de
+  policy/aprovação no Rust.
+- **T6 (ADR 0021):** autoridade final de execução no daemon, persistência e
+  fail-closed, opt-in.
+- **T7 (ADR 0022):** decisões baseline de host, rede e backup; validação no Acer
+  Nitro V15 pendente.
+- **T8 (ADR 0023):** catálogo de identidade e escopos, com integração gradual.
 
 ---
 
@@ -92,23 +105,26 @@ Control Plane funcional, independente de LLM. Sinais de SO não tratados (encerr
 
 | ADR | Título | Status |
 |-----|--------|--------|
-| 0001 | Fundação local-first (Fase 1) — Python | aceito |
-| 0002 | Backend local (Fase 2) — Python | aceito |
-| 0003 | Dados locais, bind da API e retenção — Python | aceito |
-| 0004 | Core Foundation: nexus-daemon (Fase 1) — Rust | aceito |
-| 0005 | Cognitive Foundation: motores cognitivos discretos (Fase 2) — Python | aceito |
-| 0006 | Secure Agency: Execution Gate, Rollback, SudoBroker, Execution Journal (Fase 3) — Python | aceito |
-| 0007 | Multi-Agent Intelligence: Agent Registry, Runtime, Orchestrator, Collaboration, Adversarial Review (Fase 4) — Python | aceito |
-| 0008 | Universal Simulation: Simulation Subsystem (Fase 5) — Python | aceito |
-| 0009 | Unified Experience: Web Dashboard aprimorado (Fase 6) — Python | aceito |
-| 0010 | Distributed & Adaptive Ecosystem (Fase 7) — Python | aceito |
-| 0011 | NEXUS Integration Layer (Fase 7 - Integração Final) — Python | aceito |
-| 0012 | Event Fabric: Transactional Outbox e Dead-Letter Queue (Fase 7+) — Python | aceito |
-| 0013 | Distributed Network: WebSocket entre nós (Fase 7+) — Python | aceito |
-| 0014 | Endurecimento pós-auditoria: SQLite, Event Fabric, VectorStore e CLI — Python | aceito |
-| 0015 | Execution Gate obrigatório no runtime e ciclo authorize → executar → commit — Python | aceito |
-| 0016 | Contratos Python ↔ Rust v1.0.0 (schemas, fixtures e hashes compartilhados) | aceito |
-| 0017 | Event Fabric único: outbox transacional, consumidor idempotente e bridge Python ↔ Rust (T2) | aceito |
-| 0018 | Knowledge Graph persistente: nós, arestas, proveniência e confiança (T3) | aceito |
-| 0019 | IPC de controle no daemon Rust: handshake, autenticação local e autorização (T4) | aceito |
-| 0020 | Paridade de Policy Engine e Approval Manager no Rust: revogação, TTL e consumo (T5) | aceito |
+| [0001](adr/0001-fase-1-fundacao.md) | Fundação local-first (Fase 1) — Python | aceito |
+| [0002](adr/0002-fase-2-backend.md) | Backend local (Fase 2) — Python | aceito |
+| [0003](adr/0003-seguranca-e-retencao-local.md) | Dados locais, bind da API e retenção — Python | aceito |
+| [0004](adr/0004-fase-1-core-foundation-daemon.md) | Core Foundation: nexus-daemon (Fase 1) — Rust | aceito |
+| [0005](adr/0005-fase-2-cognitive-foundation-engines.md) | Cognitive Foundation: motores cognitivos discretos (Fase 2) — Python | aceito |
+| [0006](adr/0006-fase-3-secure-agency.md) | Secure Agency: Execution Gate, Rollback, SudoBroker, Execution Journal (Fase 3) — Python | aceito |
+| [0007](adr/0007-fase-4-multi-agent-intelligence.md) | Multi-Agent Intelligence (Fase 4) — Python | aceito |
+| [0008](adr/0008-fase-5-universal-simulation.md) | Universal Simulation (Fase 5) — Python | aceito |
+| [0009](adr/0009-fase-6-unified-experience-web-dashboard.md) | Unified Experience: Web Dashboard (Fase 6) — Python | aceito |
+| [0010](adr/0010-fase-7-distributed-adaptive-ecosystem.md) | Distributed & Adaptive Ecosystem (Fase 7) — Python | aceito |
+| [0011](adr/0011-fase-7-integration-layer.md) | NEXUS Integration Layer (Fase 7) — Python | aceito |
+| [0012](adr/0012-fase-7-event-fabric-outbox-deadletter.md) | Event Fabric: Outbox e Dead-Letter Queue (Fase 7+) — Python | aceito |
+| [0013](adr/0013-fase-7-distributed-network-websocket.md) | Distributed Network: WebSocket entre nós (Fase 7+) — Python | aceito |
+| [0014](adr/0014-endurecimento-auditoria-2026-11-12.md) | Endurecimento pós-auditoria: SQLite, Event Fabric, VectorStore e CLI | aceito |
+| [0015](adr/0015-execution-gate-runtime-obrigatorio.md) | Execution Gate no runtime e ciclo authorize → executar → commit | aceito |
+| [0016](adr/0016-contratos-python-rust-v1.md) | Contratos Python ↔ Rust v1.0.0 | aceito |
+| [0017](adr/0017-event-fabric-unico-t2.md) | Event Fabric único: outbox e bridge Python ↔ Rust (T2) | aceito |
+| [0018](adr/0018-knowledge-graph-persistente-t3.md) | Knowledge Graph persistente (T3) | aceito |
+| [0019](adr/0019-ipc-controle-t4.md) | IPC de controle no daemon Rust (T4) | aceito |
+| [0020](adr/0020-paridade-policy-approval-t5.md) | Paridade de Policy Engine e Approval Manager (T5) | aceito |
+| [0021](adr/0021-execution-gate-autoritativo-t6.md) | Execution Gate autoritativo no Rust (T6) | aceito |
+| [0022](adr/0022-host-principal-rede-backup-t7.md) | Host principal, rede e backup baseline (T7) | aceito; validação no host pendente |
+| [0023](adr/0023-identity-permission-manager-t8.md) | Identity & Permission Manager (T8) | aceito |

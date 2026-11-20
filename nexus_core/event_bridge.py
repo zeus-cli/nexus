@@ -56,6 +56,22 @@ def _protocol_major(version: str) -> int | None:
     return int(major)
 
 
+def _identity_text(field: str, value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} não pode ser vazio")
+    return value
+
+
+def _identity_sha256(field: str, value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(ch not in "0123456789abcdefABCDEF" for ch in value)
+    ):
+        raise ValueError(f"{field} deve ser SHA-256 em hex (64 caracteres)")
+    return value.lower()
+
+
 class RustEventBridge:
     """Cliente newline-JSON sobre Unix Domain Socket.
 
@@ -90,7 +106,7 @@ class RustEventBridge:
         self._max_frame_bytes = max_frame_bytes
         self._component_id = component_id
         self._protocol_version = protocol_version
-        self._logger = logger or logging.getLogger("zeus.event_bridge")
+        self._logger = logger or logging.getLogger("nexus.event_bridge")
         self._socket: socket.socket | None = None
         self._buffer = b""
         self._pending: list[dict[str, Any]] = []
@@ -374,13 +390,25 @@ class RustEventBridge:
         self,
         request: Mapping[str, Any],
         *,
+        risk_level: str | None = None,
+        ttl_s: float | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        """Cria uma solicitação HITL e retorna o ``approval_record``."""
+        """Cria uma solicitação HITL e retorna o ``approval_record``.
+
+        ``risk_level`` e ``ttl_s`` são metadados do frame de controle, fora do
+        contrato ``approval_request``; quando omitidos o daemon usa o TTL
+        padrão e não grava classificação de risco.
+        """
         payload = dict(request)
         validate_contract("approval_request", payload)
+        body: dict[str, Any] = {"request": payload}
+        if risk_level is not None:
+            body["risk_level"] = risk_level
+        if ttl_s is not None:
+            body["ttl_s"] = float(ttl_s)
         with self._lock:
-            self._send({"type": "ApprovalRequest", "body": {"request": payload}})
+            self._send({"type": "ApprovalRequest", "body": body})
             frame = self._read_until({"ApprovalResponse"}, timeout=timeout)
             approval = (frame.get("body") or {}).get("approval")
             if not isinstance(approval, dict):
@@ -457,6 +485,490 @@ class RustEventBridge:
                     f"ApprovalResponse com status inesperado: {approval.get('status')!r}"
                 )
             return approval
+
+    def approval_list(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        timeout: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lista aprovações com filtro e paginação."""
+        if limit < 1:
+            raise ValueError("limit deve ser positivo")
+        if offset < 0:
+            raise ValueError("offset não pode ser negativo")
+        body: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
+        if status is not None:
+            body["status"] = status
+        with self._lock:
+            self._send({"type": "ApprovalList", "body": body})
+            frame = self._read_until({"ApprovalListResponse"}, timeout=timeout)
+            approvals = (frame.get("body") or {}).get("approvals")
+            if not isinstance(approvals, list):
+                raise BridgeProtocolError("ApprovalListResponse sem approvals")
+            for approval in approvals:
+                if not isinstance(approval, dict):
+                    raise BridgeProtocolError("ApprovalListResponse com item inválido")
+                validate_contract("approval_record", approval)
+            return approvals
+
+    def approval_verify(
+        self,
+        approval_id: str,
+        request: Mapping[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Verifica o vínculo por hash sem consumir a aprovação."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        payload = dict(request)
+        validate_contract("approval_request", payload)
+        with self._lock:
+            self._send(
+                {
+                    "type": "ApprovalVerify",
+                    "body": {"approval_id": approval_id, "request": payload},
+                }
+            )
+            frame = self._read_until({"ApprovalVerifyResponse"}, timeout=timeout)
+            valid = (frame.get("body") or {}).get("valid")
+            if not isinstance(valid, bool):
+                raise BridgeProtocolError("ApprovalVerifyResponse sem valid booleano")
+            return valid
+
+    def approval_claim(
+        self,
+        approval_id: str,
+        request: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Reivindica uma aprovação ``APPROVED`` e retorna o registro CLAIMED."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        payload: dict[str, Any] = {"approval_id": approval_id}
+        if request is not None:
+            wire = dict(request)
+            validate_contract("approval_request", wire)
+            payload["request"] = wire
+        with self._lock:
+            self._send({"type": "ApprovalClaim", "body": payload})
+            frame = self._read_until({"ApprovalResponse"}, timeout=timeout)
+            approval = (frame.get("body") or {}).get("approval")
+            if not isinstance(approval, dict):
+                raise BridgeProtocolError("ApprovalResponse sem approval")
+            validate_contract("approval_record", approval)
+            if approval.get("approval_id") != approval_id:
+                raise BridgeProtocolError(
+                    "ApprovalResponse com approval_id divergente"
+                )
+            if approval.get("status") != "CLAIMED":
+                raise BridgeProtocolError(
+                    f"ApprovalResponse com status inesperado: {approval.get('status')!r}"
+                )
+            return approval
+
+    def approval_expire(self, *, timeout: float | None = None) -> int:
+        """Expira aprovações vencidas e retorna a contagem."""
+        with self._lock:
+            self._send({"type": "ApprovalExpire"})
+            frame = self._read_until({"ApprovalExpireResponse"}, timeout=timeout)
+            expired = (frame.get("body") or {}).get("expired")
+            if not isinstance(expired, int) or isinstance(expired, bool):
+                raise BridgeProtocolError("ApprovalExpireResponse sem expired inteiro")
+            return expired
+
+    def _execution_response(
+        self,
+        frame: dict[str, Any],
+        operation: str,
+    ) -> dict[str, Any]:
+        body = frame.get("body") or {}
+        approval = body.get("approval")
+        execution = body.get("execution")
+        if not isinstance(approval, dict):
+            raise BridgeProtocolError(f"{operation}: resposta sem approval")
+        if not isinstance(execution, dict):
+            raise BridgeProtocolError(f"{operation}: resposta sem execution")
+        validate_contract("approval_record", approval)
+        return {"approval": approval, "execution": execution}
+
+    def execution_start(
+        self,
+        approval_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Inicia a execução no daemon: ``CLAIMED → CONSUMED`` + ``STARTING``."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        with self._lock:
+            self._send(
+                {"type": "ExecutionStart", "body": {"approval_id": approval_id}}
+            )
+            frame = self._read_until({"ExecutionResponse"}, timeout=timeout)
+            body = self._execution_response(frame, "execution_start")
+            if body["approval"].get("approval_id") != approval_id:
+                raise BridgeProtocolError("ExecutionResponse com approval_id divergente")
+            return body
+
+    def execution_complete(
+        self,
+        approval_id: str,
+        status: str,
+        *,
+        summary: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Fecha a execução e retorna aprovação + execução atualizadas."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        if status not in ("COMPLETED", "FAILED", "INTERRUPTED"):
+            raise ValueError(f"status de execução inválido: {status!r}")
+        payload: dict[str, Any] = {"approval_id": approval_id, "status": status}
+        if summary is not None:
+            payload["summary"] = summary
+        with self._lock:
+            self._send({"type": "ExecutionComplete", "body": payload})
+            frame = self._read_until({"ExecutionResponse"}, timeout=timeout)
+            body = self._execution_response(frame, "execution_complete")
+            if body["approval"].get("approval_id") != approval_id:
+                raise BridgeProtocolError("ExecutionResponse com approval_id divergente")
+            return body
+
+    def execution_status(
+        self,
+        approval_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Consulta aprovação + execução vinculada."""
+        if not approval_id:
+            raise ValueError("approval_id não pode ser vazio")
+        with self._lock:
+            self._send(
+                {"type": "ExecutionStatus", "body": {"approval_id": approval_id}}
+            )
+            frame = self._read_until({"ExecutionResponse"}, timeout=timeout)
+            body = self._execution_response(frame, "execution_status")
+            if body["approval"].get("approval_id") != approval_id:
+                raise BridgeProtocolError("ExecutionResponse com approval_id divergente")
+            return body
+
+    def execution_recover(
+        self,
+        timeout_s: float = 300.0,
+        *,
+        timeout: float | None = None,
+    ) -> int:
+        """Marca execuções órfãs antigas como ``UNKNOWN``."""
+        if timeout_s < 0 or not isinstance(timeout_s, (int, float)):
+            raise ValueError("timeout_s deve ser não negativo")
+        with self._lock:
+            self._send(
+                {
+                    "type": "ExecutionRecover",
+                    "body": {"timeout_s": float(timeout_s)},
+                }
+            )
+            frame = self._read_until({"ExecutionRecoverResponse"}, timeout=timeout)
+            recovered = (frame.get("body") or {}).get("recovered")
+            if not isinstance(recovered, int) or isinstance(recovered, bool):
+                raise BridgeProtocolError(
+                    "ExecutionRecoverResponse sem recovered inteiro"
+                )
+            return recovered
+
+
+    # -- identidade (T8.3) --------------------------------------------------
+
+    def identity_list(
+        self,
+        actor_id: str,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        timeout: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lista principals; o daemon exige ``identity.principals.read``."""
+        body: dict[str, Any] = {"actor_id": _identity_text("actor_id", actor_id)}
+        if kind is not None:
+            body["kind"] = _identity_text("kind", kind)
+        if status is not None:
+            body["status"] = _identity_text("status", status)
+        with self._lock:
+            self._send({"type": "IdentityList", "body": body})
+            frame = self._read_until({"IdentityPrincipalsResponse"}, timeout=timeout)
+            principals = (frame.get("body") or {}).get("principals")
+            if not isinstance(principals, list) or not all(
+                isinstance(item, dict) for item in principals
+            ):
+                raise BridgeProtocolError(
+                    "IdentityPrincipalsResponse sem principals"
+                )
+            return principals
+
+    def identity_get(
+        self,
+        actor_id: str,
+        principal_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Consulta um principal; exige ``identity.principals.read``."""
+        body = {
+            "actor_id": _identity_text("actor_id", actor_id),
+            "principal_id": _identity_text("principal_id", principal_id),
+        }
+        with self._lock:
+            self._send({"type": "IdentityGet", "body": body})
+            frame = self._read_until({"IdentityPrincipalResponse"}, timeout=timeout)
+            principal = (frame.get("body") or {}).get("principal")
+            if not isinstance(principal, dict):
+                raise BridgeProtocolError("IdentityPrincipalResponse sem principal")
+            return principal
+
+    def identity_create_principal(
+        self,
+        actor_id: str,
+        *,
+        kind: str,
+        display_name: str,
+        role_id: str,
+        parent_id: str | None = None,
+        max_autonomy: int = 0,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Cria um principal; exige ``identity.principals.manage``."""
+        if (
+            not isinstance(max_autonomy, int)
+            or isinstance(max_autonomy, bool)
+            or not 0 <= max_autonomy <= 4
+        ):
+            raise ValueError("max_autonomy deve estar entre 0 e 4")
+        body: dict[str, Any] = {
+            "actor_id": _identity_text("actor_id", actor_id),
+            "kind": _identity_text("kind", kind),
+            "display_name": _identity_text("display_name", display_name),
+            "role_id": _identity_text("role_id", role_id),
+            "max_autonomy": max_autonomy,
+        }
+        if parent_id is not None:
+            body["parent_id"] = _identity_text("parent_id", parent_id)
+        with self._lock:
+            self._send({"type": "IdentityCreatePrincipal", "body": body})
+            frame = self._read_until({"IdentityPrincipalResponse"}, timeout=timeout)
+            principal = (frame.get("body") or {}).get("principal")
+            if not isinstance(principal, dict):
+                raise BridgeProtocolError("IdentityPrincipalResponse sem principal")
+            return principal
+
+    def identity_revoke_principal(
+        self,
+        actor_id: str,
+        principal_id: str,
+        reason: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Revoga um principal; exige ``identity.principals.manage``."""
+        body = {
+            "actor_id": _identity_text("actor_id", actor_id),
+            "principal_id": _identity_text("principal_id", principal_id),
+            "reason": _identity_text("reason", reason),
+        }
+        with self._lock:
+            self._send({"type": "IdentityRevokePrincipal", "body": body})
+            frame = self._read_until({"IdentityRevocationResponse"}, timeout=timeout)
+            summary = (frame.get("body") or {}).get("summary")
+            if not isinstance(summary, dict):
+                raise BridgeProtocolError("IdentityRevocationResponse sem summary")
+            return summary
+
+    def identity_effective_scopes(
+        self,
+        principal_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> list[str]:
+        """Escopos efetivos calculados pelo daemon."""
+        body = {"principal_id": _identity_text("principal_id", principal_id)}
+        with self._lock:
+            self._send({"type": "IdentityEffectiveScopes", "body": body})
+            frame = self._read_until({"IdentityScopesResponse"}, timeout=timeout)
+            scopes = (frame.get("body") or {}).get("scopes")
+            if not isinstance(scopes, list) or not all(
+                isinstance(scope, str) for scope in scopes
+            ):
+                raise BridgeProtocolError("IdentityScopesResponse sem scopes")
+            return scopes
+
+    def identity_permission_check(
+        self,
+        principal_id: str,
+        scope: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Consulta fail-closed se o principal possui o escopo."""
+        body = {
+            "principal_id": _identity_text("principal_id", principal_id),
+            "scope": _identity_text("scope", scope),
+        }
+        with self._lock:
+            self._send({"type": "IdentityPermissionCheck", "body": body})
+            frame = self._read_until({"IdentityPermissionResponse"}, timeout=timeout)
+            response = frame.get("body") or {}
+            allowed = response.get("allowed")
+            if not isinstance(allowed, bool):
+                raise BridgeProtocolError(
+                    "IdentityPermissionResponse sem allowed booleano"
+                )
+            reason = response.get("reason")
+            if reason is not None and not isinstance(reason, str):
+                raise BridgeProtocolError(
+                    "IdentityPermissionResponse com reason inválido"
+                )
+            return {"allowed": allowed, "reason": reason}
+
+    def identity_device_list(
+        self,
+        actor_id: str,
+        *,
+        principal_id: str | None = None,
+        timeout: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lista devices; exige ``identity.devices.read``."""
+        body: dict[str, Any] = {"actor_id": _identity_text("actor_id", actor_id)}
+        if principal_id is not None:
+            body["principal_id"] = _identity_text("principal_id", principal_id)
+        with self._lock:
+            self._send({"type": "IdentityDeviceList", "body": body})
+            frame = self._read_until({"IdentityDevicesResponse"}, timeout=timeout)
+            devices = (frame.get("body") or {}).get("devices")
+            if not isinstance(devices, list) or not all(
+                isinstance(item, dict) for item in devices
+            ):
+                raise BridgeProtocolError("IdentityDevicesResponse sem devices")
+            return devices
+
+    def identity_device_revoke(
+        self,
+        actor_id: str,
+        device_id: str,
+        reason: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Revoga um device; exige ``identity.devices.manage``."""
+        body = {
+            "actor_id": _identity_text("actor_id", actor_id),
+            "device_id": _identity_text("device_id", device_id),
+            "reason": _identity_text("reason", reason),
+        }
+        with self._lock:
+            self._send({"type": "IdentityDeviceRevoke", "body": body})
+            frame = self._read_until({"IdentityRevocationResponse"}, timeout=timeout)
+            summary = (frame.get("body") or {}).get("summary")
+            if not isinstance(summary, dict):
+                raise BridgeProtocolError("IdentityRevocationResponse sem summary")
+            return summary
+
+    def identity_pair_start(
+        self,
+        actor_id: str,
+        role_id: str,
+        secret_hash: str,
+        *,
+        code_hash: str | None = None,
+        constraints: Mapping[str, Any] | None = None,
+        ttl_s: float = 300.0,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Cria uma sessão de pairing; envia apenas hashes, nunca o segredo."""
+        if not isinstance(ttl_s, (int, float)) or isinstance(ttl_s, bool) or ttl_s <= 0:
+            raise ValueError("ttl_s deve ser positivo")
+        body: dict[str, Any] = {
+            "actor_id": _identity_text("actor_id", actor_id),
+            "role_id": _identity_text("role_id", role_id),
+            "secret_hash": _identity_sha256("secret_hash", secret_hash),
+            "ttl_s": float(ttl_s),
+        }
+        if code_hash is not None:
+            body["code_hash"] = _identity_sha256("code_hash", code_hash)
+        if constraints is not None:
+            if not isinstance(constraints, Mapping):
+                raise ValueError("constraints deve ser um objeto")
+            body["constraints"] = dict(constraints)
+        with self._lock:
+            self._send({"type": "IdentityPairStart", "body": body})
+            frame = self._read_until({"IdentityPairingResponse"}, timeout=timeout)
+            session = (frame.get("body") or {}).get("session")
+            if not isinstance(session, dict):
+                raise BridgeProtocolError("IdentityPairingResponse sem session")
+            if "secret_hash" in session:
+                raise BridgeProtocolError(
+                    "IdentityPairingResponse não pode expor secret_hash"
+                )
+            return session
+
+
+    def identity_init_owner(
+        self,
+        token_hash: str,
+        *,
+        display_name: str | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Bootstrap idempotente do owner local; envia apenas o hash do token."""
+        body: dict[str, Any] = {
+            "token_hash": _identity_sha256("token_hash", token_hash),
+        }
+        if display_name is not None:
+            body["display_name"] = _identity_text("display_name", display_name)
+        with self._lock:
+            self._send({"type": "IdentityInitOwner", "body": body})
+            frame = self._read_until({"IdentityOwnerResponse"}, timeout=timeout)
+            return _identity_owner_body(frame)
+
+    def identity_owner_status(
+        self,
+        token_hash: str,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Resolve o owner local pelo hash do token, sem criar nada."""
+        body = {"token_hash": _identity_sha256("token_hash", token_hash)}
+        with self._lock:
+            self._send({"type": "IdentityOwnerStatus", "body": body})
+            frame = self._read_until({"IdentityOwnerResponse"}, timeout=timeout)
+            return _identity_owner_body(frame)
+
+
+def _identity_owner_body(frame: Mapping[str, Any]) -> dict[str, Any]:
+    body = frame.get("body") or {}
+    initialized = body.get("initialized")
+    if not isinstance(initialized, bool):
+        raise BridgeProtocolError("IdentityOwnerResponse sem initialized booleano")
+    principal = body.get("principal")
+    if principal is not None and not isinstance(principal, dict):
+        raise BridgeProtocolError("IdentityOwnerResponse com principal inválido")
+    credential_id = body.get("credential_id")
+    if credential_id is not None and not isinstance(credential_id, str):
+        raise BridgeProtocolError("IdentityOwnerResponse com credential_id inválido")
+    for flag in ("created_principal", "created_credential"):
+        if not isinstance(body.get(flag), bool):
+            raise BridgeProtocolError(f"IdentityOwnerResponse sem {flag} booleano")
+    return {
+        "initialized": initialized,
+        "principal": principal,
+        "credential_id": credential_id,
+        "created_principal": body["created_principal"],
+        "created_credential": body["created_credential"],
+    }
 
 
 __all__ = [

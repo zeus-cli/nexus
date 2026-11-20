@@ -4,8 +4,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 ///
 /// Idempotente: chamar múltiplas vezes reconfigura o subscriber global.
 pub fn init(level: &str, _json: bool) -> Result<(), String> {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     fmt::fmt()
         .with_env_filter(filter)
         .try_init()

@@ -31,7 +31,7 @@ json = true
 
 [events]
 dedup_window_hours = 0
-query_limit = 500
+query_limit = {query_limit}
 
 [api]
 port = 8765
@@ -44,6 +44,7 @@ autonomy_level = {level}
 @unittest.skipUnless(API_AVAILABLE, "fastapi/httpx ausentes — rode com .venv/bin/python")
 class ApiTestCase(unittest.TestCase):
     autonomy_level = 1
+    query_limit = 500
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -52,7 +53,12 @@ class ApiTestCase(unittest.TestCase):
         (root / "config").mkdir(parents=True)
         self.config_path = root / "config" / "nexus.toml"
         self.config_path.write_text(
-            textwrap.dedent(CONFIG_TEMPLATE.format(level=self.autonomy_level)), encoding="utf-8"
+            textwrap.dedent(
+                CONFIG_TEMPLATE.format(
+                    level=self.autonomy_level, query_limit=self.query_limit
+                )
+            ),
+            encoding="utf-8",
         )
 
         self.runtime = bootstrap(self.config_path, console_logs=False)
@@ -445,6 +451,52 @@ class WebSocketTest(ApiTestCase):
                 replayed_ids.append(frame["event"]["event_id"])
             self.assertEqual(frame["type"], "auth.ok")
         self.assertEqual(replayed_ids, event_ids[-3:])
+
+
+class ReplayWindowLimitTest(ApiTestCase):
+    """Regressões: replay deve vencer o limite por página e filtrar antes de encher."""
+
+    query_limit = 2
+
+    def _record(self, kind: str, index: int) -> str:
+        response = self.client.post(
+            "/api/v1/events",
+            headers=self.headers,
+            json={"kind": kind, "payload": {"index": index}},
+        )
+        self.assertEqual(response.status_code, 201)
+        return response.json()["event_id"]
+
+    def _replay(self, kinds: str, replay: int) -> list[str]:
+        ids: list[str] = []
+        with self.client.websocket_connect(
+            f"/api/v1/ws/events?kinds={kinds}&replay={replay}"
+        ) as socket:
+            socket.send_json({"type": "auth", "token": self.token})
+            while True:
+                frame = socket.receive_json()
+                if frame["type"] != "event":
+                    self.assertEqual(frame["type"], "auth.ok")
+                    break
+                ids.append(frame["event"]["event_id"])
+        return ids
+
+    def test_replay_exceeds_configured_query_limit(self) -> None:
+        event_ids = [self._record("agent.replay.limit", index) for index in range(5)]
+        self.assertEqual(
+            self._replay("agent.replay.limit", 3),
+            event_ids[-3:],
+        )
+
+    def test_replay_filters_unrelated_events_before_filling_window(self) -> None:
+        matching = [self._record("agent.replay.match", index) for index in range(3)]
+        for index in range(4):
+            self._record("system.unrelated", index)
+
+        self.assertEqual(
+            self._replay("agent.replay.match", 2),
+            matching[-2:],
+        )
 
 
 class ReadOnlyAutonomyTest(ApiTestCase):

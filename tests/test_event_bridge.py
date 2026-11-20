@@ -13,15 +13,18 @@ A cobertura tem duas camadas:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import os
 import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
@@ -33,6 +36,9 @@ from nexus_core.contracts import (
     event_to_wire,
     load_fixture,
 )
+from nexus_core.approval import ApprovalDecision, ApprovalRequest
+from nexus_core.automation_types import RiskLevel
+from nexus_core.control_plane import ControlPlaneClient, RustApprovalManager
 from nexus_core.event_bridge import (
     IPC_PROTOCOL_VERSION,
     BridgeError,
@@ -42,6 +48,7 @@ from nexus_core.event_bridge import (
     RustEventBridge,
 )
 from nexus_core.events import Event
+from nexus_core.execution_gate import ExecutionGate, GateDecision
 
 ROOT = Path(__file__).resolve().parents[1]
 DAEMON_BINARY = ROOT / "core" / "nexus-daemon" / "target" / "debug" / "nexus-daemon"
@@ -156,7 +163,6 @@ def make_event(**overrides) -> Event:
         "kind": "bridge.ping",
         "source": "test",
         "payload": {"text": "ação", "n": 1},
-        "created_at": datetime(2026, 11, 14, 12, 0, tzinfo=UTC),
     }
     base.update(overrides)
     return Event(**base)
@@ -447,6 +453,266 @@ def test_control_response_is_validated(tmp_path):
         bridge.authorize(load_fixture("valid/authorization_request.json"))
 
 
+def test_fake_daemon_identity_commands(tmp_path):
+    owner = {
+        "id": "prn_owner",
+        "kind": "user",
+        "display_name": "Owner",
+        "role_id": "owner",
+        "status": "active",
+        "max_autonomy": 4,
+    }
+    summary = {
+        "principal_ids": ["prn_guest"],
+        "principals": 1,
+        "credentials": 0,
+        "devices": 0,
+        "approvals": 0,
+        "pairing_sessions": 0,
+    }
+
+    def responder(frame: dict) -> list[dict]:
+        kind = frame["type"]
+        if kind == "IdentityList":
+            return [
+                {
+                    "type": "IdentityPrincipalsResponse",
+                    "body": {"principals": [owner]},
+                }
+            ]
+        if kind == "IdentityGet":
+            return [
+                {
+                    "type": "IdentityPrincipalResponse",
+                    "body": {"principal": owner},
+                }
+            ]
+        if kind == "IdentityCreatePrincipal":
+            guest = dict(owner, id="prn_guest", display_name="Guest", role_id="guest")
+            return [
+                {
+                    "type": "IdentityPrincipalResponse",
+                    "body": {"principal": guest},
+                }
+            ]
+        if kind in ("IdentityRevokePrincipal", "IdentityDeviceRevoke"):
+            return [
+                {"type": "IdentityRevocationResponse", "body": {"summary": summary}}
+            ]
+        if kind == "IdentityEffectiveScopes":
+            return [
+                {
+                    "type": "IdentityScopesResponse",
+                    "body": {"principal_id": "prn_owner", "scopes": ["tools.read"]},
+                }
+            ]
+        if kind == "IdentityPermissionCheck":
+            allowed = frame["body"]["scope"] == "tools.read"
+            return [
+                {
+                    "type": "IdentityPermissionResponse",
+                    "body": {
+                        "principal_id": "prn_guest",
+                        "scope": frame["body"]["scope"],
+                        "allowed": allowed,
+                        "reason": None if allowed else "escopo ausente",
+                    },
+                }
+            ]
+        if kind == "IdentityDeviceList":
+            return [
+                {
+                    "type": "IdentityDevicesResponse",
+                    "body": {"devices": [{"id": "dev_1", "principal_id": "prn_guest"}]},
+                }
+            ]
+        if kind == "IdentityPairStart":
+            return [
+                {
+                    "type": "IdentityPairingResponse",
+                    "body": {
+                        "session": {
+                            "id": "pair_1",
+                            "role_id": frame["body"]["role_id"],
+                            "created_by": frame["body"]["actor_id"],
+                            "status": "pending",
+                        }
+                    },
+                }
+            ]
+        return []
+
+    socket_path = tmp_path / "fake-identity.sock"
+    with FakeDaemon(socket_path, responder) as fake, RustEventBridge(
+        socket_path, timeout=2
+    ) as bridge:
+        principals = bridge.identity_list("prn_owner")
+        assert principals[0]["id"] == "prn_owner"
+        assert bridge.identity_get("prn_owner", "prn_owner")["role_id"] == "owner"
+        guest = bridge.identity_create_principal(
+            "prn_owner",
+            kind="user",
+            display_name="Guest",
+            role_id="guest",
+            max_autonomy=0,
+        )
+        assert guest["id"] == "prn_guest"
+        assert bridge.identity_effective_scopes("prn_owner") == ["tools.read"]
+        assert bridge.identity_permission_check("prn_guest", "tools.read") == {
+            "allowed": True,
+            "reason": None,
+        }
+        denied = bridge.identity_permission_check("prn_guest", "tools.write")
+        assert denied["allowed"] is False
+        assert bridge.identity_device_list("prn_owner")[0]["id"] == "dev_1"
+        assert bridge.identity_device_revoke(
+            "prn_owner", "dev_1", "perdido"
+        )["principals"] == 1
+        session = bridge.identity_pair_start(
+            "prn_owner",
+            "guest",
+            "a" * 64,
+            code_hash="b" * 64,
+            constraints={"max_autonomy": 0},
+            ttl_s=60,
+        )
+        assert session["status"] == "pending"
+        assert bridge.identity_revoke_principal(
+            "prn_owner", "prn_guest", "teste"
+        )["principals"] == 1
+
+    frames = fake.frames()
+    assert [frame["type"] for frame in frames] == [
+        "Hello",
+        "IdentityList",
+        "IdentityGet",
+        "IdentityCreatePrincipal",
+        "IdentityEffectiveScopes",
+        "IdentityPermissionCheck",
+        "IdentityPermissionCheck",
+        "IdentityDeviceList",
+        "IdentityDeviceRevoke",
+        "IdentityPairStart",
+        "IdentityRevokePrincipal",
+    ]
+    create = frames[3]["body"]
+    assert create["actor_id"] == "prn_owner"
+    assert create["kind"] == "user"
+    assert create["role_id"] == "guest"
+    assert "parent_id" not in create
+    pair = frames[9]["body"]
+    assert pair["secret_hash"] == "a" * 64
+    assert pair["code_hash"] == "b" * 64
+    assert pair["constraints"] == {"max_autonomy": 0}
+    assert pair["ttl_s"] == 60.0
+
+
+def test_control_plane_pair_start_never_sends_raw_secret(tmp_path):
+    def responder(frame: dict) -> list[dict]:
+        if frame["type"] == "IdentityPairStart":
+            return [
+                {
+                    "type": "IdentityPairingResponse",
+                    "body": {
+                        "session": {
+                            "id": "pair_1",
+                            "role_id": frame["body"]["role_id"],
+                            "status": "pending",
+                        }
+                    },
+                }
+            ]
+        return []
+
+    socket_path = tmp_path / "fake-pair.sock"
+    with FakeDaemon(socket_path, responder) as fake, ControlPlaneClient(
+        socket_path, timeout=2
+    ) as client:
+        result = client.identity_pair_start("prn_owner", "family")
+        assert result["secret"]
+        assert len(result["code"]) == 8
+        assert result["session"]["id"] == "pair_1"
+
+    pair = fake.frames()[-1]
+    assert pair["type"] == "IdentityPairStart"
+    body = pair["body"]
+    assert body["secret_hash"] == hashlib.sha256(
+        result["secret"].encode("utf-8")
+    ).hexdigest()
+    assert body["code_hash"] == hashlib.sha256(
+        result["code"].encode("utf-8")
+    ).hexdigest()
+    assert result["secret"] not in json.dumps(body)
+    assert result["code"] not in json.dumps(body)
+
+
+def test_fake_daemon_owner_bootstrap_never_sends_raw_token(tmp_path):
+    principal = {
+        "id": "prn_owner",
+        "kind": "user",
+        "display_name": "Owner",
+        "role_id": "owner",
+        "status": "active",
+        "max_autonomy": 4,
+    }
+
+    def responder(frame: dict) -> list[dict]:
+        kind = frame["type"]
+        if kind == "IdentityInitOwner":
+            return [
+                {
+                    "type": "IdentityOwnerResponse",
+                    "body": {
+                        "initialized": True,
+                        "principal": principal,
+                        "credential_id": "cred_local",
+                        "created_principal": True,
+                        "created_credential": True,
+                    },
+                }
+            ]
+        if kind == "IdentityOwnerStatus":
+            return [
+                {
+                    "type": "IdentityOwnerResponse",
+                    "body": {
+                        "initialized": True,
+                        "principal": principal,
+                        "credential_id": "cred_local",
+                        "created_principal": False,
+                        "created_credential": False,
+                    },
+                }
+            ]
+        return []
+
+    socket_path = tmp_path / "fake-owner.sock"
+    token = "nexus_token_local_secreto"
+    with FakeDaemon(socket_path, responder) as fake, ControlPlaneClient(
+        socket_path, timeout=2
+    ) as client:
+        created = client.identity_init_owner(token, display_name="Owner")
+        assert created["created_principal"] is True
+        assert created["principal"]["role_id"] == "owner"
+        status = client.identity_owner_status(token)
+        assert status["initialized"] is True
+        assert status["created_credential"] is False
+
+    frames = fake.frames()
+    assert [frame["type"] for frame in frames] == [
+        "Hello",
+        "IdentityInitOwner",
+        "IdentityOwnerStatus",
+    ]
+    expected = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    assert frames[1]["body"]["token_hash"] == expected
+    assert frames[1]["body"]["display_name"] == "Owner"
+    assert frames[2]["body"]["token_hash"] == expected
+    wire = json.dumps([frame for frame in frames if frame["type"] != "Hello"])
+    assert token not in wire
+    assert "secreto" not in wire
+
+
 # --------------------------------------------------------------------------- #
 # Daemon Rust real
 # --------------------------------------------------------------------------- #
@@ -473,6 +739,21 @@ def _daemon_binary_is_stale() -> bool:
     sources = list((ROOT / "core" / "nexus-daemon" / "src").rglob("*.rs"))
     sources.append(ROOT / "core" / "nexus-daemon" / "Cargo.toml")
     return any(path.stat().st_mtime > built_at for path in sources)
+
+
+@dataclass(frozen=True)
+class RustDaemonHandle:
+    """Handle do daemon real; iterável para manter o unpacking dos testes."""
+
+    socket_path: Path
+    events_db: Path
+    approvals_db: Path
+    config_path: Path
+    process: subprocess.Popen
+
+    def __iter__(self):
+        yield self.socket_path
+        yield self.events_db
 
 
 @pytest.fixture
@@ -526,7 +807,13 @@ socket_path = "{socket_path.as_posix()}"
     )
     try:
         _wait_for_socket(socket_path, process, 10)
-        yield socket_path, tmp_path / "data" / "databases" / "nexus_daemon_events.db"
+        yield RustDaemonHandle(
+            socket_path=socket_path,
+            events_db=tmp_path / "data" / "databases" / "nexus_daemon_events.db",
+            approvals_db=tmp_path / "data" / "databases" / "nexus_approvals.db",
+            config_path=config_path,
+            process=process,
+        )
     finally:
         if process.poll() is None:
             process.terminate()
@@ -690,3 +977,318 @@ def test_real_daemon_authorize_approval_flow(rust_daemon):
 
         with pytest.raises(BridgeError):
             bridge.approval_revoke(revoked_id)
+
+
+# --------------------------------------------------------------------------- #
+# T6 — autoridade final no daemon e ciclo de execução
+# --------------------------------------------------------------------------- #
+
+async def _authorize_high_risk(gate: ExecutionGate):
+    return await gate.authorize(
+        component_id="automation_engine",
+        tool_id="sys.dangerous",
+        params={"target": "integration"},
+        task_id="task-t6",
+        plan_id="plan-t6",
+        risk_level=RiskLevel.HIGH,
+        autonomy_level=1,
+        required_autonomy=1,
+        execution_mode="HOST",
+        access_level="WRITE",
+        policy_version="1.0",
+        fs_scope="DEFAULT",
+        net_scope="NONE",
+        resource_limits="default",
+        justification="T6 integration test",
+    )
+
+
+def test_real_daemon_authoritative_execution_cycle_persists_history(rust_daemon):
+    client = ControlPlaneClient(rust_daemon.socket_path, timeout=5)
+    manager = RustApprovalManager(client)
+    gate = ExecutionGate(control_plane=client, authoritative=True)
+
+    try:
+        async def exercise():
+            pending = await _authorize_high_risk(gate)
+            assert pending.decision == GateDecision.REQUIRES_APPROVAL
+            approval_id = pending.metadata["approval_id"]
+            assert manager.get_request(approval_id)["status"] == "PENDING"
+
+            manager.decide(
+                approval_id,
+                ApprovalDecision(decision="APPROVED", approver="operator"),
+            )
+            assert manager.get_request(approval_id)["status"] == "APPROVED"
+
+            runner_calls = []
+
+            def runner(params):
+                runner_calls.append(dict(params))
+                return {"ran": True}
+
+            outcome = await gate.execute(pending.request_id, runner=runner)
+            assert outcome["ok"] is True
+            assert outcome["result"] == {"ran": True}
+            assert runner_calls == [{"target": "integration"}]
+            return approval_id, outcome
+
+        approval_id, outcome = asyncio.run(exercise())
+
+        record = manager.get_request(approval_id)
+        assert record["status"] == "CONSUMED"
+        assert record["consumed_at"] is not None
+        assert record["decided_by"] == "operator"
+
+        history = manager.get_history(status="CONSUMED")
+        assert [item["id"] for item in history] == [approval_id]
+
+        execution = manager.get_execution(approval_id)
+        assert execution["status"] == "COMPLETED"
+        assert execution["result_summary"]
+    finally:
+        client.close()
+
+    with sqlite3.connect(
+        f"file:{rust_daemon.approvals_db}?mode=ro", uri=True
+    ) as connection:
+        approval_row = connection.execute(
+            "SELECT status, consumed_at FROM approvals WHERE id = ?",
+            (approval_id,),
+        ).fetchone()
+        execution_row = connection.execute(
+            "SELECT status, completed_at FROM executions WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+
+    assert approval_row is not None
+    assert approval_row[0] == "CONSUMED"
+    assert approval_row[1] is not None
+    assert execution_row is not None
+    assert execution_row[0] == "COMPLETED"
+    assert execution_row[1] is not None
+
+
+def test_real_daemon_owner_bootstrap_and_audit(rust_daemon):
+    token = "nexus_owner_token_de_teste"
+    client = ControlPlaneClient(rust_daemon.socket_path, timeout=5)
+    try:
+        assert client.identity_owner_status(token)["initialized"] is False
+        first = client.identity_init_owner(token, display_name="Owner Local")
+        assert first["initialized"] is True
+        assert first["created_principal"] is True
+        assert first["created_credential"] is True
+        assert first["principal"]["role_id"] == "owner"
+
+        second = client.identity_init_owner(token, display_name="Ignorado")
+        assert second["created_principal"] is False
+        assert second["created_credential"] is False
+        assert second["principal"]["id"] == first["principal"]["id"]
+        assert second["credential_id"] == first["credential_id"]
+
+        status = client.identity_owner_status(token)
+        assert status["initialized"] is True
+        assert status["principal"]["id"] == first["principal"]["id"]
+
+        principals = client.identity_list(first["principal"]["id"])
+        assert [item["id"] for item in principals] == [first["principal"]["id"]]
+    finally:
+        client.close()
+
+    with sqlite3.connect(
+        f"file:{rust_daemon.events_db}?mode=ro", uri=True
+    ) as connection:
+        rows = connection.execute(
+            "SELECT kind, payload FROM events "
+            "WHERE kind LIKE 'identity.%' ORDER BY id"
+        ).fetchall()
+    assert [kind for kind, _ in rows] == [
+        "identity.principal.created",
+        "identity.credential.issued",
+    ]
+    payloads = [json.loads(payload) for _, payload in rows]
+    assert payloads[0]["actor_id"] == "local_bootstrap"
+    assert payloads[0]["role"] == "owner"
+    assert payloads[1]["kind"] == "local_owner"
+    assert token not in json.dumps(payloads)
+    assert hashlib.sha256(token.encode("utf-8")).hexdigest() not in json.dumps(
+        payloads
+    )
+
+
+def test_real_daemon_identity_cli_init_status_list_revoke(rust_daemon):
+    data_dir = rust_daemon.approvals_db.parent.parent
+    python_config = rust_daemon.config_path.with_name("nexus-cli.toml")
+    python_config.write_text(
+        f"""
+[nexus]
+name = "NEXUS"
+environment = "test"
+
+[paths]
+data_dir = "{data_dir.as_posix()}"
+
+[logging]
+level = "WARNING"
+json = true
+
+[control_plane]
+socket_path = "{rust_daemon.socket_path.as_posix()}"
+timeout_s = 5.0
+""",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["NEXUS_CONFIG"] = str(python_config)
+    env.pop("NEXUS_API_TOKEN", None)
+
+    def run_cli(*arguments: str) -> dict:
+        result = subprocess.run(
+            [sys.executable, "-m", "nexus_core.cli", *arguments],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr[-3000:]
+        return json.loads(result.stdout)
+
+    first = run_cli("identity", "init", "--name", "Owner CLI", "--json")
+    assert first["created_principal"] is True
+    assert first["principal"]["display_name"] == "Owner CLI"
+    assert first["token_source"] == "file"
+
+    second = run_cli("identity", "init", "--name", "Outro", "--json")
+    assert second["created_principal"] is False
+    assert second["credential_id"] == first["credential_id"]
+    assert second["principal"]["id"] == first["principal"]["id"]
+
+    status = run_cli("identity", "status", "--json")
+    assert status["initialized"] is True
+    assert status["principal"]["id"] == first["principal"]["id"]
+
+    listed = run_cli("identity", "list", "--json")
+    assert [item["id"] for item in listed] == [first["principal"]["id"]]
+
+    client = ControlPlaneClient(rust_daemon.socket_path, timeout=5)
+    try:
+        guest = client.identity_create_principal(
+            first["principal"]["id"],
+            kind="user",
+            display_name="Guest CLI",
+            role_id="guest",
+            max_autonomy=0,
+        )
+    finally:
+        client.close()
+
+    revoked = run_cli(
+        "identity",
+        "revoke",
+        guest["id"],
+        "--reason",
+        "teste da CLI",
+        "--json",
+    )
+    assert revoked["principals"] == 1
+    with sqlite3.connect(
+        f"file:{rust_daemon.approvals_db}?mode=ro", uri=True
+    ) as connection:
+        status_row = connection.execute(
+            "SELECT status FROM principals WHERE id = ?", (guest["id"],)
+        ).fetchone()
+    assert status_row == ("revoked",)
+
+
+def test_real_daemon_identity_ipc_roundtrip(rust_daemon):
+    owner_id = "prn_test_owner"
+    with sqlite3.connect(rust_daemon.approvals_db, timeout=5) as connection:
+        connection.execute("PRAGMA busy_timeout = 5000")
+        now = time.time()
+        connection.execute(
+            "INSERT INTO principals (\n"
+            "  id, kind, display_name, role_id, parent_id, status, max_autonomy,\n"
+            "  created_at, updated_at, revoked_at, metadata\n"
+            ") VALUES (?, 'user', 'Owner', 'owner', NULL, 'active', 4, ?, ?, NULL, '{}')",
+            (owner_id, now, now),
+        )
+        connection.commit()
+
+    client = ControlPlaneClient(rust_daemon.socket_path, timeout=5)
+    try:
+        principals = client.identity_list(owner_id)
+        assert [principal["id"] for principal in principals] == [owner_id]
+        assert client.identity_effective_scopes(owner_id)[0:1] == ["agents.manage"]
+
+        guest = client.identity_create_principal(
+            owner_id,
+            kind="user",
+            display_name="Guest",
+            role_id="guest",
+            max_autonomy=0,
+        )
+        assert guest["role_id"] == "guest"
+        assert client.identity_permission_check(guest["id"], "tools.read") == {
+            "allowed": True,
+            "reason": None,
+        }
+        assert client.identity_permission_check(guest["id"], "tools.write")[
+            "allowed"
+        ] is False
+
+        pairing = client.identity_pair_start(
+            owner_id, "guest", constraints={"max_autonomy": 0}, ttl_s=60
+        )
+        assert pairing["session"]["status"] == "pending"
+        assert client.identity_get(owner_id, guest["id"])["status"] == "active"
+
+        summary = client.identity_revoke_principal(
+            owner_id, guest["id"], "teste de integração"
+        )
+        assert summary["principals"] == 1
+        assert client.identity_get(owner_id, guest["id"])["status"] == "revoked"
+        assert client.identity_permission_check(guest["id"], "tools.read")[
+            "allowed"
+        ] is False
+    finally:
+        client.close()
+
+
+def test_real_daemon_dead_denies_execution_and_approvals(rust_daemon):
+    client = ControlPlaneClient(rust_daemon.socket_path, timeout=0.5)
+    manager = RustApprovalManager(client)
+    gate = ExecutionGate(control_plane=client, authoritative=True)
+
+    try:
+        assert client.health()["status"] == "ok"
+
+        process = rust_daemon.process
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+        denied = asyncio.run(_authorize_high_risk(gate))
+
+        assert denied.decision == GateDecision.DENIED
+        assert "control plane unavailable" in denied.reason
+        assert manager.verify_action("ap-dead", ApprovalRequest(
+            tool_id="sys.dangerous",
+            params={"target": "integration"},
+            task_id="task-t6",
+            plan_id="plan-t6",
+            execution_mode="HOST",
+            access_level="WRITE",
+            fs_scope="DEFAULT",
+            net_scope="NONE",
+            resource_limits="default",
+            policy_version="1.0",
+            justification="T6 integration test",
+        )) is False
+        assert manager.claim_approval("ap-dead") is False
+    finally:
+        client.close()

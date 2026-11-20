@@ -132,6 +132,11 @@ class AutomationEngine:
         if tool is None:
             raise ValueError(f"Tool not found: {tool_id!r}")
 
+        authoritative = (
+            self._execution_gate is not None
+            and self._execution_gate.authoritative
+        )
+
         # 1. Policy Evaluation
         context = PolicyContext(
             autonomy_level=self._autonomy_level,
@@ -150,15 +155,15 @@ class AutomationEngine:
         # 2. Approval Handling
         effective_approval_id = approval_id
         
-        if decision == PolicyDecision.REQUIRE_APPROVAL:
+        if decision == PolicyDecision.REQUIRE_APPROVAL and not authoritative:
             if approval_id is None:
                 req = ApprovalRequest(
                     tool_id=tool.id,
                     params={"args": args},
                     task_id=task_id,
                     plan_id=plan_id,
-                    execution_mode=tool.execution_mode.value,
-                    access_level=tool.access.value,
+                    execution_mode=tool.execution_mode.name,
+                    access_level=tool.access.name,
                     fs_scope=fs_scope,
                     net_scope=net_scope,
                     resource_limits=resource_limits,
@@ -174,8 +179,8 @@ class AutomationEngine:
                 params={"args": args},
                 task_id=task_id,
                 plan_id=plan_id,
-                execution_mode=tool.execution_mode.value,
-                access_level=tool.access.value,
+                execution_mode=tool.execution_mode.name,
+                access_level=tool.access.name,
                 fs_scope=fs_scope,
                 net_scope=net_scope,
                 resource_limits=resource_limits,
@@ -198,8 +203,8 @@ class AutomationEngine:
                 autonomy_level=self._autonomy_level,
                 required_autonomy=tool.required_autonomy,
                 approval_id=approval_id,
-                execution_mode=tool.execution_mode.value,
-                access_level=tool.access.value,
+                execution_mode=tool.execution_mode.name,
+                access_level=tool.access.name,
                 policy_version=self._policy_engine.policy_version,
                 fs_scope=fs_scope,
                 net_scope=net_scope,
@@ -221,6 +226,24 @@ class AutomationEngine:
                 )
                 raise AutomationDenied(f"Execution Gate DENY: {gate_result.reason}")
             if gate_result.decision == GateDecision.REQUIRES_APPROVAL and not approval_id:
+                if authoritative:
+                    requested_id = (gate_result.metadata or {}).get("approval_id")
+                    if not isinstance(requested_id, str) or not requested_id:
+                        raise AutomationDenied(
+                            "Execution Gate required approval without approval_id"
+                        )
+                    await self._recorder.record(
+                        Event(
+                            kind="automation.approval.requested",
+                            source="automation",
+                            payload={
+                                "request_id": requested_id,
+                                "tool_id": tool.id,
+                                "authority": "rust",
+                            },
+                        )
+                    )
+                    raise ApprovalRequired(requested_id, gate_result.reason, task_id)
                 raise AutomationDenied(
                     f"Execution Gate requires approval: {gate_result.reason}"
                 )
@@ -229,7 +252,21 @@ class AutomationEngine:
         # Só faz claim depois que o Execution Gate autorizou, para não
         # deixar uma aprovação CONSUMED sem execução se o gate negar.
         effective_approval_id = approval_id
-        if approval_id:
+        if authoritative:
+            if gate_result is None or gate_result.execution_id is None:
+                raise AutomationDenied(
+                    "Execution Gate did not authorize execution"
+                )
+            try:
+                await self._execution_gate.begin_execution(
+                    gate_result.execution_id
+                )
+            except Exception as exc:
+                raise AutomationDenied(
+                    f"Execution Gate refused to start execution: {exc}"
+                ) from exc
+            effective_approval_id = approval_id or "auto-allowed"
+        elif approval_id:
             if not self._approval_manager.claim_approval(approval_id):
                 raise AutomationDenied("Approval not available, expired or already consumed.")
             
@@ -283,7 +320,7 @@ class AutomationEngine:
                 gate_result, tool_id=tool.id, success=False, error="cancelled"
             )
             await self._record_terminal("automation.action.cancelled", tool, started, None)
-            if effective_approval_id != "auto-allowed":
+            if effective_approval_id != "auto-allowed" and not authoritative:
                 self._approval_manager.update_execution_status(effective_approval_id, ExecutionStatus.INTERRUPTED)
             raise
         except Exception as exc:
@@ -291,7 +328,7 @@ class AutomationEngine:
                 gate_result, tool_id=tool.id, success=False, error=type(exc).__name__
             )
             await self._record_terminal("automation.action.failed", tool, started, type(exc).__name__)
-            if effective_approval_id != "auto-allowed":
+            if effective_approval_id != "auto-allowed" and not authoritative:
                 self._approval_manager.update_execution_status(effective_approval_id, ExecutionStatus.FAILED)
             if isinstance(exc, asyncio.TimeoutError):
                 raise AutomationError(
@@ -311,7 +348,7 @@ class AutomationEngine:
         )
 
         # 5. Finalize: Update final status
-        if effective_approval_id != "auto-allowed":
+        if effective_approval_id != "auto-allowed" and not authoritative:
             self._approval_manager.update_execution_status(
                 effective_approval_id,
                 status,

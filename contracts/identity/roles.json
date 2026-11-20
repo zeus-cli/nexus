@@ -1,0 +1,93 @@
+{
+  "catalog_version": "1.0.0",
+  "contract_version": "1.0.0",
+  "description": "Papéis built-in do NEXUS (T8). Owner usa lista explícita: escopo novo não é concedido automaticamente.",
+  "roles": [
+    {
+      "id": "owner",
+      "name": "Owner",
+      "description": "Administra o host, a identidade, os dispositivos, as aprovações e o egress remoto.",
+      "builtin": true,
+      "scopes": [
+        "identity.self.read",
+        "identity.principals.read",
+        "identity.principals.manage",
+        "identity.devices.read",
+        "identity.devices.manage",
+        "identity.pairing.create",
+        "security.approvals.read.self",
+        "security.approvals.read.all",
+        "security.approvals.decide.self",
+        "security.approvals.decide.others",
+        "tools.read",
+        "tools.write",
+        "tools.execute",
+        "memory.read.self",
+        "memory.write.self",
+        "memory.read.shared",
+        "memory.write.shared",
+        "memory.read.all",
+        "memory.delete.any",
+        "agents.read",
+        "agents.spawn",
+        "agents.manage",
+        "simulations.run",
+        "llm.local",
+        "llm.remote",
+        "system.status",
+        "system.backup",
+        "system.admin"
+      ]
+    },
+    {
+      "id": "family",
+      "name": "Family",
+      "description": "Usa ferramentas e memória compartilhada, aprova as próprias ações e não administra identidade nem egress remoto.",
+      "builtin": true,
+      "scopes": [
+        "identity.self.read",
+        "security.approvals.read.self",
+        "security.approvals.decide.self",
+        "tools.read",
+        "tools.write",
+        "memory.read.self",
+        "memory.write.self",
+        "memory.read.shared",
+        "memory.write.shared",
+        "agents.read",
+        "agents.spawn",
+        "simulations.run",
+        "llm.local",
+        "system.status"
+      ]
+    },
+    {
+      "id": "guest",
+      "name": "Guest",
+      "description": "Acesso mínimo: leitura, memória privada efêmera, simulações e inferência local.",
+      "builtin": true,
+      "scopes": [
+        "identity.self.read",
+        "tools.read",
+        "memory.read.self",
+        "memory.write.self",
+        "simulations.run",
+        "llm.local"
+      ]
+    },
+    {
+      "id": "service",
+      "name": "Service",
+      "description": "Componentes internos: ferramentas e estado, sem identidade, aprovação ou egress remoto. Escopos específicos são narrowing explícito.",
+      "builtin": true,
+      "scopes": [
+        "tools.read",
+        "tools.write",
+        "tools.execute",
+        "memory.read.self",
+        "memory.write.self",
+        "system.status"
+      ]
+    }
+  ]
+}

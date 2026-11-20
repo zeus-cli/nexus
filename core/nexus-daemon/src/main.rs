@@ -1,10 +1,13 @@
 mod approval;
+mod approval_store;
 mod bootstrap;
 mod config;
 mod contracts;
+mod control_schema;
 mod events;
 mod execution;
 mod health;
+mod identity;
 mod ipc;
 mod logging;
 mod policy;
@@ -78,6 +81,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Arc::clone(&runtime.fabric),
         Arc::clone(&runtime.health),
         Arc::clone(&runtime.security),
+        Arc::clone(&runtime.approvals),
+        Arc::clone(&runtime.identity),
         tokio::runtime::Handle::current(),
     );
     server.spawn()?;
@@ -148,10 +153,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     } else {
-        // Produção: aguarda indefinidamente. O encerramento ocorre por sinal do SO
-        // (SIGTERM/SIGINT) — o tratamento de sinais fica para quando o tokio
-        // `unix` feature estiver disponível neste ambiente.
-        std::future::pending::<()>().await;
+        // Produção: aguarda indefinidamente até SIGTERM (systemd) ou SIGINT.
+        await_shutdown_signal().await;
     }
 
     // Shutdown gracioso.
@@ -179,6 +182,44 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!(component = "nexus-daemon", "shutdown concluído");
     Ok(())
+}
+
+/// Aguarda o sinal de encerramento do systemd (SIGTERM) ou Ctrl-C (SIGINT).
+///
+/// O retorno leva ao shutdown gracioso: parada dos serviços supervisionados e
+/// emissão de `system.stopped` antes de sair com código 0 (TD-013).
+async fn await_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                warn!(
+                    component = "nexus-daemon",
+                    erro = %error,
+                    "SIGTERM indisponível; aguardando apenas SIGINT"
+                );
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!(component = "nexus-daemon", signal = "SIGINT", "sinal de encerramento recebido");
+            }
+            _ = terminate.recv() => {
+                info!(component = "nexus-daemon", signal = "SIGTERM", "sinal de encerramento recebido");
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(test)]

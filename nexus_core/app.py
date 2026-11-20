@@ -25,6 +25,11 @@ from typing import Any
 from . import __version__
 from .approval import ApprovalManager
 from .automation import AutomationEngine
+from .control_plane import (
+    ControlPlaneClient,
+    ControlPlaneError,
+    RustApprovalManager,
+)
 from .execution_gate import ExecutionGate
 from .policy import PolicyEngine
 from .reflection import ReflectionEngine
@@ -54,6 +59,7 @@ from .privatefs import (
 from .recorder import EventRecorder
 from .sentinel import SentinelReceiver
 from .resources import ResourceManager
+from .scheduler import Scheduler
 
 SERVICE_SOURCE = "nexus_core.app"
 
@@ -69,7 +75,7 @@ class NexusRuntime:
     llm_gateway: LLMGateway
     cognitive: CognitiveCore
     automation: AutomationEngine
-    approvals: ApprovalManager
+    approvals: ApprovalManager | RustApprovalManager
     logger: Any
     started_at: datetime
     resources: ResourceManager
@@ -86,6 +92,8 @@ class NexusRuntime:
     scenario_manager: Any = None
     experiment_runner: Any = None
     execution_gate: ExecutionGate | None = None
+    scheduler: Scheduler | None = None
+    control_plane: ControlPlaneClient | None = None
 
     async def aclose(self) -> None:
         """Close asynchronous provider clients and the SQLite connection."""
@@ -96,9 +104,13 @@ class NexusRuntime:
 
     def close(self) -> None:
         try:
-            self.database.close()
+            if self.control_plane is not None:
+                self.control_plane.close()
         finally:
-            self.logger.info("runtime encerrado", extra={"component": "app"})
+            try:
+                self.database.close()
+            finally:
+                self.logger.info("runtime encerrado", extra={"component": "app"})
 
 
 def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = True) -> NexusRuntime:
@@ -133,14 +145,48 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         store, bus, logger=get_logger("recorder"), fabric=fabric
     )
     llm_gateway = LLMGateway(config.llm)
-    ensure_private_directory(config.paths.approvals_db.parent)
-    ensure_private_file(config.paths.approvals_db)
-    approvals = ApprovalManager(db_path=str(config.paths.approvals_db))
+    control_plane: ControlPlaneClient | None = None
+    if config.control_plane.enabled:
+        control_socket = (
+            config.control_plane.socket_path
+            or config.paths.data_dir / "run" / "nexus-daemon.sock"
+        )
+        control_plane = ControlPlaneClient(
+            control_socket,
+            timeout=config.control_plane.timeout_s,
+        )
+        approvals = RustApprovalManager(control_plane)
+        try:
+            control_status = control_plane.health()
+            logger.info(
+                "control plane conectado; autoridade de execução no Rust",
+                extra={
+                    "component": "bootstrap",
+                    "socket": str(control_socket),
+                    "daemon_status": control_status.get("status"),
+                },
+            )
+        except ControlPlaneError as exc:
+            logger.warning(
+                "control plane indisponível; execuções serão negadas até o "
+                "daemon voltar (fail-closed)",
+                extra={
+                    "component": "bootstrap",
+                    "socket": str(control_socket),
+                    "error": str(exc),
+                },
+            )
+    else:
+        ensure_private_directory(config.paths.approvals_db.parent)
+        ensure_private_file(config.paths.approvals_db)
+        approvals = ApprovalManager(db_path=str(config.paths.approvals_db))
     policy_engine = PolicyEngine()
     execution_gate = ExecutionGate(
         approval_manager=approvals,
         policy_engine=policy_engine,
         recorder=recorder,
+        control_plane=control_plane,
+        authoritative=config.control_plane.enabled,
     )
     automation = AutomationEngine(
         config.safety.autonomy_level,
@@ -152,6 +198,7 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
     reflection = ReflectionEngine(llm_gateway)
     task_store = TaskStore(str(config.paths.tasks_dir))
     cognitive = CognitiveCore(llm_gateway, memory, recorder, automation, reflection, task_store, knowledge_engine=knowledge)
+    scheduler = Scheduler(automation, cognitive)
 
     # Fase 4 — Multi-Agent Intelligence
     agent_registry = AgentRegistry()
@@ -195,9 +242,11 @@ def bootstrap(config_path: str | Path | None = None, *, console_logs: bool = Tru
         scenario_manager=scenario_manager,
         experiment_runner=experiment_runner,
         execution_gate=execution_gate,
+        scheduler=scheduler,
         fabric=fabric,
         knowledge_graph=knowledge_graph,
         knowledge=knowledge,
+        control_plane=control_plane,
     )
     logger.info(
         "runtime inicializado",
@@ -224,6 +273,42 @@ def health(runtime: NexusRuntime) -> dict[str, Any]:
         {"name": "banco", "ok": integrity == "ok", "detail": integrity},
         {"name": "schema", "ok": runtime.database.pending_migrations() == []},
     ]
+    control_socket = (
+        config.control_plane.socket_path
+        or config.paths.data_dir / "run" / "nexus-daemon.sock"
+    )
+    control_plane_info: dict[str, Any] = {
+        "enabled": config.control_plane.enabled,
+        "authoritative": config.control_plane.enabled,
+        "socket_path": str(control_socket),
+        "status": "disabled",
+    }
+    if config.control_plane.enabled:
+        try:
+            if runtime.control_plane is None:
+                raise RuntimeError("cliente do control plane ausente")
+            remote = runtime.control_plane.health(
+                timeout=min(2.0, config.control_plane.timeout_s)
+            )
+            remote_status = remote.get("status")
+            control_plane_info["status"] = remote_status
+            checks.append(
+                {
+                    "name": "control_plane",
+                    "ok": remote_status == "ok",
+                    "detail": remote_status,
+                }
+            )
+        except Exception as exc:
+            control_plane_info["status"] = "unavailable"
+            control_plane_info["error"] = str(exc)
+            checks.append(
+                {
+                    "name": "control_plane",
+                    "ok": False,
+                    "detail": "unavailable",
+                }
+            )
     status = "ok" if all(check["ok"] for check in checks) else "degraded"
     return {
         "status": status,
@@ -258,6 +343,7 @@ def health(runtime: NexusRuntime) -> dict[str, Any]:
             "usage": runtime.llm_gateway.usage(),
         },
         "bus": runtime.bus.stats.as_dict(),
+        "control_plane": control_plane_info,
         "knowledge_graph": (
             runtime.knowledge_graph.stats() if runtime.knowledge_graph else {
                 "nodes": 0,
@@ -277,6 +363,12 @@ def health(runtime: NexusRuntime) -> dict[str, Any]:
                 "total": 0,
                 "by_status": {},
                 "dead_letter": 0,
+            }
+        ),
+        "scheduler": (
+            {
+                "running": runtime.scheduler.running if runtime.scheduler else False,
+                "tasks": len(runtime.scheduler.list_tasks()) if runtime.scheduler else 0,
             }
         ),
         "log_file": str(config.paths.log_file),
@@ -323,6 +415,8 @@ async def serve(
     try:
         if runtime.fabric is not None:
             runtime.fabric.start()
+        if runtime.scheduler is not None:
+            await runtime.scheduler.start()
         await sentinel.start()
         runtime.sentinel = sentinel
         while iterations is None or count < iterations:
@@ -350,6 +444,8 @@ async def serve(
         logger.info("serviço interrompido por sinal", extra={"component": "service"})
         raise
     finally:
+        if runtime.scheduler is not None:
+            await runtime.scheduler.stop()
         await sentinel.close()
         runtime.sentinel = None
         uptime = round(time.monotonic() - started, 3)

@@ -34,7 +34,7 @@ class EventRecorder:
         self._store = store
         self._bus = bus
         self._fabric = fabric
-        self._logger = logger or logging.getLogger("zeus.recorder")
+        self._logger = logger or logging.getLogger("nexus.recorder")
 
     @property
     def store(self) -> EventStore:

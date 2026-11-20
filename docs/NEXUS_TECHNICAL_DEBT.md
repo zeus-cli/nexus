@@ -1,8 +1,8 @@
 # NEXUS Technical Debt
 
-**Versão:** 1.2
+**Versão:** 1.3
 **Projeto:** NEXUS — Cognitive Operating System
-**Atualizado:** 2026-11-13
+**Atualizado:** 2026-11-20
 
 Registro de dívida técnica conhecida, com prioridade, estado e próxima ação. Mantido como fonte da verdade para planejamento de refatoração.
 
@@ -18,13 +18,13 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-002 — Systemd units (P0) — RESOLVIDO (2026-11-12)
+## TD-002 — Systemd units (P0) — PARCIAL (2026-11-20)
 
-**Descrição:** `systemd/nexus-core.service` e `systemd/nexus-sentinel.service` existem e foram implantadas/ativadas como units de usuário.
+**Descrição:** `nexus-core` e `nexus-sentinel` foram ativados no ambiente de desenvolvimento em uma validação anterior. As units do daemon e backup agora também existem no workspace. O Acer Nitro V15 ainda não foi provisionado/validado.
 
-**Resolução:** `systemctl --user is-active` e `is-enabled` reportam `active`/`enabled` para ambos os serviços. O sistema inicia automaticamente e sobrevive a reinícios do usuário.
+**Estado:** a evidência anterior de `active`/`enabled` é histórica e não comprova o servidor Acer. O T7 inclui a instalação, linger, boot e validação das três units no host alvo.
 
-**Próxima ação:** manter a validação de `systemd-analyze --user verify` em CI ou checklist de release.
+**Próxima ação:** completar T7.2 e validar `systemd-analyze --user verify`, reinício automático e shutdown gracioso no Acer.
 
 ---
 
@@ -60,9 +60,9 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ## TD-006 — Hardware limitado para modelos locais (P4) — PARCIAL
 
-**Descrição:** Host (i3, 11–12 GB RAM) não comporta confortavelmente modelos grandes (Gemma 4 12B/31B) localmente.
+**Descrição:** A estação Dell de desenvolvimento (Core i3-1115G4, 11 GiB RAM, Intel UHD) não comporta confortavelmente modelos grandes localmente. A capacidade do Acer Nitro V15 ainda precisa de inventário e benchmark.
 
-**Mitigação atual:** o Ollama local roda `nexusorbe-llama3.1:latest` (8B) e `nexusorbe-llama3.2:latest` (3B); modelos remotos maiores são usados via OpenCode em outro host. O NEXUS mantém a cadeia local por política de egress.
+**Mitigação registrada em 2026-11-12:** a configuração foi alinhada aos tags `nexusorbe-llama3.1:latest` (8B) e `nexusorbe-llama3.2:latest` (3B). A disponibilidade desses modelos precisa ser conferida no Acer antes de fechar o T7.
 
 **Próxima ação:** benchmarkar em host com GPU/RAM maior; manter fallback leve local para indisponibilidade de LLM.
 
@@ -134,13 +134,20 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 ---
 
-## TD-013 — Sinais de SO não tratados no daemon Rust (P2) — Open
+## TD-013 — Sinais de SO não tratados no daemon Rust (P2) — RESOLVIDO (2026-11-16)
 
-**Descrição:** `nexus-daemon` não trata SIGTERM/SIGINT via `tokio::signal` (feature `unix` indisponível no ambiente de build).
+**Descrição:** `nexus-daemon` não tratava SIGTERM/SIGINT via `tokio::signal`.
 
-**Impacto:** Encerramento apenas por kill do processo; sem shutdown gracioso via sinal.
+**Resolução:** `await_shutdown_signal()` em `core/nexus-daemon/src/main.rs` usa
+`tokio::signal::unix` (SIGTERM) e `ctrl_c` (SIGINT) no modo de produção. O
+retorno aciona o shutdown gracioso já existente: parada dos serviços
+supervisionados, emissão de `system.stopped` e saída com código 0. O modo
+`NEXUS_DAEMON_ONCE` permanece inalterado. Validado com o binário release
+(SIGTERM → exit 0 → `system.stopped` no event store) e `cargo test` com 86
+testes.
 
-**Próxima ação:** Revisar quando o tokio `unix` feature estiver disponível.
+**Próxima ação:** validar `systemctl --user stop nexus-daemon` no Acer e manter
+`TimeoutStopSec` compatível com o shutdown.
 
 ---
 
@@ -158,9 +165,9 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 | Prioridade | Itens |
 |------------|-------|
-| P0 | TD-001, TD-010 (abertos); TD-002 (resolvido) |
-| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020, TD-022 |
-| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013, TD-017 (resolvido), TD-019, TD-021 (parcial) |
+| P0 | TD-001, TD-010 (abertos); TD-002 (parcial, Acer pendente) |
+| P1 | TD-007 (aceito), TD-008, TD-012, TD-014, TD-020, TD-022 (resolvido) |
+| P2 | TD-003 (resolvido), TD-005, TD-009, TD-013 (resolvido), TD-017 (resolvido), TD-019, TD-021 (parcial) |
 | P3 | TD-004 |
 | P4 | TD-006 (parcial) |
 
@@ -172,7 +179,7 @@ Registro de dívida técnica conhecida, com prioridade, estado e próxima ação
 
 **Resolução:** `bootstrap()` cria o `ExecutionGate` com o mesmo `PolicyEngine` e `ApprovalManager` do runtime e o injeta no `AutomationEngine`. `AutomationEngine.run()` chama `authorize()` antes de reivindicar/executar a aprovação e `commit()` registra o resultado real da execução. O caminho `gate.execute(runner=None)` foi removido; não há mais execução fantasma. Cobertura em `tests/test_e2e_execution_gate.py` e `tests/test_execution_gate.py`.
 
-**Próxima ação:** substituir a autoridade Python pelo daemon Rust (T6), mantendo a interface `authorize → executar → commit` e o fail-closed. O T4 entregou a superfície de controle local e o T5 a paridade de policy/aprovação, mas nenhum dos dois moveu a autoridade final.
+**Próxima ação:** o T6 entregou a autoridade Rust opt-in (ADR 0021), mantendo o modo local como padrão; validar a habilitação operacional no T7 e manter o fail-closed quando o daemon estiver indisponível.
 
 ---
 
@@ -240,41 +247,41 @@ deliberadamente abertas:
    múltiplos processos consumidores exigem claim transacional.
 
 Além disso, a autenticação do IPC é por UID: processos do mesmo usuário não são
-isolados entre si, e não há TLS nem autenticação por token. Isso é intencional
-enquanto o soquete é local e o Python continua sendo a autoridade final.
+isolados entre si, e não há TLS nem autenticação por token. O socket permanece
+local; no modo padrão a autoridade Python é usada, enquanto T6 oferece
+autoridade Rust opt-in. Identidade de rede e pub/sub multi-dispositivo pertencem
+ao T8–T10.
 
 **Impacto:** entrega confiável no runtime Python atual e controle local
 protegido contra outros UIDs, mas ainda não há durabilidade de assinatura no
 Control Plane nem isolamento entre processos do mesmo usuário.
 
-**Próxima ação:** implementar outbox/offsets no Rust e claim transacional de
-consumidor antes de mover o gate para o Control Plane (T6); TLS,
-autenticação por token e rate limit pertencem ao endurecimento posterior. Não
-expor o socket remotamente até o gate Rust estar fechado.
+**Próxima ação:** implementar outbox/offsets duráveis e claim transacional por
+consumidor para cumprir o T10. Manter o socket local; TLS, autenticação por
+dispositivo e rate limit pertencem ao gateway T9.
 
 ---
 
-## TD-022 — Approval Manager Rust sem persistência, histórico ou recuperação (P1) — Open
+## TD-022 — Approval Manager Rust sem persistência, histórico ou recuperação (P1) — RESOLVIDO (2026-11-16)
 
-**Descrição:** O T5 fechou a paridade funcional do `ApprovalManager` Rust em
-memória: `request`/`request_with_ttl`, `decide`, `claim`, `verify_action`,
-`revoke`, `mark_consumed`, `expire_stale` e todos os estados do contrato
-(`PENDING`, `APPROVED`, `DENIED`, `CLAIMED`, `CONSUMED`, `EXPIRED`, `REVOKED`).
-O que ainda não existe no Rust:
+**Descrição original:** o T5 fechou a paridade funcional do `ApprovalManager`
+Rust em memória, mas faltavam persistência em SQLite, histórico/listagem com
+paginação, tabela de execuções com recuperação de órfãos e convivência com o
+banco de aprovações do Python. Reiniciar o daemon apagava a trilha de
+auditoria e uma execução interrompida ficava sem estado observável.
 
-1. persistência em SQLite — reiniciar o daemon invalida aprovações pendentes;
-2. histórico/listagem (`list_pending`, `get_history`) e paginação;
-3. tabela de execuções e `recover_orphans` para aprovações `CLAIMED` cujo
-   processo morreu antes de `CONSUMED`;
-4. migração/convivência com o banco de aprovações do Python.
+**Resolução:** o T6 adicionou `ApprovalStore` SQLite em
+`data/databases/nexus_approvals.db`, com o mesmo schema de `approvals`/
+`executions` do Python, WAL, `busy_timeout`, transações para
+`claim`/`start`/`complete` e permissão `0600`. O `bootstrap` abre o store e
+recupera execuções órfãs (`STARTING`/`RUNNING` antigas → `UNKNOWN`). O IPC
+ganhou `ApprovalList`, `ApprovalVerify`, `ApprovalClaim`, `ApprovalExpire`,
+`ExecutionStart`, `ExecutionComplete`, `ExecutionStatus` e
+`ExecutionRecover`; o `ExecutionStart` produz `CLAIMED → CONSUMED` +
+`STARTING`. O Python passou a usar `ControlPlaneClient`/`RustApprovalManager`
+via IPC, sem dual-write, quando `[control_plane] enabled = true`; o modo local
+continua o padrão e o daemon indisponível nega execução (fail-closed).
 
-**Impacto:** o comportamento é fail-closed (reinício nega, não autoriza), o que
-é aceitável enquanto o Python é a autoridade final. Porém o T6 não pode mover a
-autoridade para o Rust sem durabilidade e recuperação de órfãos: uma execução
-interrompida ficaria sem estado observável, e um reinício apagaria a trilha de
-auditoria de aprovações.
-
-**Próxima ação:** no T6, persistir aprovações e execuções no SQLite governado
-(ou adaptador equivalente), com migração explícita, índices, TTL e recuperação
-de órfãos; preservar o hash canônico, os estados e os fixtures de paridade.
-Até lá, manter o Python como autoridade efetiva e não expor o IPC remotamente.
+**Próxima ação:** manter o schema de aprovações/execuções em paridade com o
+Python em futuras migrações, validar a recuperação de órfãos no host real do
+T7 e não expor o socket IPC remotamente antes do T9/T10.

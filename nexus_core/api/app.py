@@ -62,6 +62,8 @@ SOURCE = "api"
 WS_AUTH_TIMEOUT = 5.0
 WS_PING_INTERVAL = 20.0
 WS_REPLAY_MAX = 200
+#: quantos eventos podem ser varridos para preencher o replay filtrado
+WS_REPLAY_SCAN_MAX = 2000
 DENIAL_THROTTLE_SECONDS = 2.0
 HEARTBEAT_INTERVAL = 60.0
 
@@ -155,7 +157,7 @@ def create_app(
     auth: Authenticator,
     hub: RealtimeHub | None = None,
 ) -> FastAPI:
-    logger = logging.getLogger("zeus.api")
+    logger = logging.getLogger("nexus.api")
     denial = {"last": 0.0, "suppressed": 0}
 
     async def audit_denial(target: Request | WebSocket, reason: str) -> None:
@@ -578,6 +580,56 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return result.as_dict()
 
+    # -- agendador ----------------------------------------------------------
+    @app.get(f"{API_PREFIX}/scheduler/tasks", dependencies=[read])
+    async def list_scheduled() -> dict[str, Any]:
+        sched = runtime.scheduler
+        if sched is None:
+            return {"items": [], "running": False}
+        return {"items": sched.list_tasks(), "running": sched.running}
+
+    @app.post(f"{API_PREFIX}/scheduler/tasks", dependencies=[write])
+    async def create_scheduled(body: dict[str, Any]) -> dict[str, Any]:
+        from ..scheduler import SchedulerError
+        sched = runtime.scheduler
+        if sched is None:
+            raise HTTPException(status_code=503, detail="agendador indisponível")
+        for field in ("name", "kind", "target"):
+            if field not in body:
+                raise HTTPException(status_code=422, detail=f"campo ausente: {field}")
+        if body["kind"] not in ("automation", "cognitive"):
+            raise HTTPException(status_code=422, detail="kind deve ser 'automation' ou 'cognitive'")
+        try:
+            task_id = sched.schedule(
+                name=str(body["name"])[:128],
+                kind=body["kind"],
+                target=str(body["target"]),
+                interval_s=body.get("interval_s"),
+                enabled=bool(body.get("enabled", True)),
+            )
+        except SchedulerError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"task_id": task_id}
+
+    @app.delete(f"{API_PREFIX}/scheduler/tasks/{{task_id}}", dependencies=[write])
+    async def delete_scheduled(task_id: str) -> dict[str, Any]:
+        from ..scheduler import TaskNotFound
+        sched = runtime.scheduler
+        if sched is None:
+            raise HTTPException(status_code=503, detail="agendador indisponível")
+        try:
+            sched.cancel(task_id)
+        except TaskNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"cancelled": task_id}
+
+    @app.get(f"{API_PREFIX}/scheduler/history", dependencies=[read])
+    async def scheduler_history(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, Any]:
+        sched = runtime.scheduler
+        if sched is None:
+            return {"items": []}
+        return {"items": sched.get_history(limit=limit)}
+
     # -- aprovações HITL ------------------------------------------------------
     @app.get(f"{API_PREFIX}/approvals/pending", dependencies=[read])
     async def list_pending_approvals() -> dict[str, Any]:
@@ -772,12 +824,30 @@ def create_app(
 
         try:
             if replay:
-                # O store retorna primeiro os eventos mais novos; reverta a
-                # página limitada para reproduzi-la em ordem cronológica.
-                history = runtime.store.query(limit=replay)
-                for event in reversed(history):
-                    if client.matches(event.kind):
-                        await websocket.send_json({"type": "event", "event": event.to_dict()})
+                # ``store.query`` limita cada página a ``query_limit``. Paginar
+                # evita dois defeitos: truncar o replay quando o limite
+                # configurado é menor que ``replay`` e perder eventos
+                # correspondentes quando eles estão atrás de eventos de outros
+                # kinds na janela mais recente.
+                page_size = max(1, min(replay, runtime.store.query_limit))
+                matches: list[Event] = []
+                scanned = 0
+                offset = 0
+                while len(matches) < replay and scanned < WS_REPLAY_SCAN_MAX:
+                    page = runtime.store.query(limit=page_size, offset=offset)
+                    if not page:
+                        break
+                    scanned += len(page)
+                    offset += len(page)
+                    for event in page:  # mais novos primeiro
+                        if client.matches(event.kind):
+                            matches.append(event)
+                            if len(matches) >= replay:
+                                break
+                    if len(page) < page_size:
+                        break
+                for event in reversed(matches):
+                    await websocket.send_json({"type": "event", "event": event.to_dict()})
             await websocket.send_json(
                 {
                     "type": "auth.ok",
@@ -789,20 +859,28 @@ def create_app(
             )
             sender = asyncio.create_task(_stream(websocket, client))
             reader = asyncio.create_task(_drain(websocket))
-            done, pending = await asyncio.wait(
-                {sender, reader}, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-            for task in done:
+
+            def observe(task: asyncio.Task[Any]) -> None:
+                """Consome exceções sem atrasar o encerramento do handler."""
                 if task.cancelled():
-                    continue
+                    return
                 error = task.exception()
                 if error is not None and not isinstance(error, WebSocketDisconnect):
                     logger.warning(
                         "sessão de tempo real encerrada com erro",
                         extra={"component": "api", "client_id": client.id, "error": str(error)},
                     )
+
+            sender.add_done_callback(observe)
+            reader.add_done_callback(observe)
+            _done, pending = await asyncio.wait(
+                {sender, reader}, return_when=asyncio.FIRST_COMPLETED
+            )
+            # O callback acima já recupera a exceção de cada tarefa; aguardar
+            # aqui atrasaria o retorno do handler e poderia ser cancelado pelo
+            # encerramento do servidor antes de liberar a sessão.
+            for task in pending:
+                task.cancel()
         except WebSocketDisconnect:
             pass
         finally:

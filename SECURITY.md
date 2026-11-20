@@ -1,6 +1,15 @@
 # NEXUS Security
 
-**Updated:** 2026-11-12
+**Atualizado:** 2026-11-20
+
+## Estado de integração
+
+O bootstrap injeta o `ExecutionGate` no `AutomationEngine` no modo local. O
+daemon Rust pode assumir política, aprovação e consumo quando
+`[control_plane] enabled = true`; esse modo está desativado por padrão e ainda
+aguarda validação operacional no Acer Nitro V15. Identidade por pessoa e
+dispositivo está em implementação no T8; a API atual continua usando um token
+local único e não aceita clientes móveis autenticados individualmente.
 
 ## HITL Execution Gate
 
@@ -14,7 +23,9 @@ Tool Registry -> PolicyEngine -> ApprovalManager -> Execution Reservation
 - Decisões da PolicyEngine: `ALLOW`, `REQUIRE_APPROVAL`, `DENY`.
 - Vínculo criptográfico: aprovações são vinculadas ao SHA-256 de `(tool_id, params, task_id, plan_id, mode, access, scope, policy_version)`.
 - Protocolo de consumo: at-most-once. Status: `PENDING -> APPROVED -> CLAIMED -> CONSUMED`.
-- **Estado atual da integração:** o `AutomationEngine` aplica `PolicyEngine` + `ApprovalManager` diretamente e aceita um `ExecutionGate` opcional; o bootstrap ainda não injeta o gate centralizado por padrão (TD-015).
+- **Estado atual da integração:** o bootstrap cria e injeta o `ExecutionGate` no
+  `AutomationEngine`. A autoridade Rust é opcional e só entra em vigor com
+  `[control_plane] enabled = true`.
 
 ## HITL Lifecycle and Recovery
 
@@ -27,8 +38,10 @@ APPROVED -> CLAIMED -> CONSUMED (STARTING) -> COMPLETED/FAILED
 - O consumo ocorre **antes** do lançamento do subprocesso.
 - Aprovações expiradas são rejeitadas em `claim_approval()`. Uma decisão tardia pode ser registrada para auditoria, mas não pode ser consumida.
 - `recover_orphans()` marca como `UNKNOWN` execuções presas em `PREPARED`/`STARTING`/`RUNNING` por mais de 5 minutos.
-- `SandboxExecutor` é usado estritamente via `AutomationEngine` (com `ExecutionGate` opcional).
-- Todas as decisões devem ser assinadas por um `APIUser` autenticado.
+- `SandboxExecutor` é chamado pelo `AutomationEngine` depois das verificações do
+  gate; o gate não reexecuta a operação.
+- Decisões humanas são atribuídas a um `APIUser` autenticado. A vinculação a
+  principal e dispositivo continua pendente no T8.
 
 ## API Local
 
@@ -67,3 +80,6 @@ APPROVED -> CLAIMED -> CONSUMED (STARTING) -> COMPLETED/FAILED
 - **SQLite síncrono em caminhos assíncronos:** `busy_timeout` reduz contenção, mas não elimina bloqueio do event loop.
 - **Criptografia opcional:** o Task Store grava em texto claro quando nenhuma chave é fornecida.
 - **Sem TLS:** aceito por design para loopback.
+- **Identidade multi-dispositivo:** não há pairing nem autorização HTTP por
+  principal/device. Não exponha a API para a LAN ou para a tailnet até o gateway
+  do T9 estar implementado e revisado.

@@ -6,6 +6,7 @@ from enum import Enum, auto
 from dataclasses import dataclass
 from typing import Any, Optional
 from .llm_router.gateway import LLMGateway
+from .llm_router.json_utils import extract_json_object
 
 class ReflectionDecision(Enum):
     SUCCESS = auto()            # Goal achieved
@@ -66,8 +67,7 @@ class ReflectionEngine:
                 system=critique_system,
                 json_mode=True,
             )
-            import json
-            data = json.loads(res.text)
+            data = extract_json_object(res.text)
             
             decision_map = {
                 "SUCCESS": ReflectionDecision.SUCCESS,

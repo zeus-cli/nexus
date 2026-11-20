@@ -12,10 +12,11 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 
-from ..config import LlmConfig, ProviderConfig
+from ..config import LlmConfig, ProviderConfig, is_loopback_host
 
 
 class ProviderError(Exception):
@@ -65,6 +66,17 @@ def _messages(system: str | None, prompt: str) -> list[dict[str, str]]:
     return messages
 
 
+def _optional_token_count(value: Any) -> int | None:
+    """Converte contagens de token sem deixar dados ruins escaparem."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
 class OllamaProvider:
     kind = "ollama"
 
@@ -72,7 +84,14 @@ class OllamaProvider:
         self.name = cfg.name
         self.models = cfg.models
         self._base = cfg.base_url.rstrip("/")
-        self._client = client or httpx.AsyncClient(timeout=cfg.timeout_s, follow_redirects=False)
+        # Ollama local-first: não deixe variáveis de proxy do ambiente
+        # desviarem tráfego de loopback (HTTP_PROXY/ALL_PROXY etc.).
+        local_host = is_loopback_host(urlsplit(cfg.base_url).hostname or "")
+        self._client = client or httpx.AsyncClient(
+            timeout=cfg.timeout_s,
+            follow_redirects=False,
+            trust_env=not local_host,
+        )
         self._owns_client = client is None
 
     async def complete(
@@ -112,17 +131,27 @@ class OllamaProvider:
         except ValueError as exc:
             raise ProviderError(f"{self.name}: resposta não é JSON", retryable=False) from exc
 
-        message = data.get("message") or {}
-        text = str(message.get("content") or "").strip()
+        try:
+            if not isinstance(data, dict):
+                raise ValueError("corpo não é objeto JSON")
+            message = data.get("message") or {}
+            if not isinstance(message, dict):
+                raise ValueError("campo 'message' inválido")
+            text = str(message.get("content") or "").strip()
+            model_name = str(data.get("model") or model)
+            prompt_tokens = _optional_token_count(data.get("prompt_eval_count"))
+            completion_tokens = _optional_token_count(data.get("eval_count"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ProviderError(f"{self.name}: resposta inesperada", retryable=False) from exc
         if not text:
             raise ProviderError(f"{self.name}: resposta vazia do modelo {model}")
         return RawCompletion(
             text=text,
-            model=str(data.get("model") or model),
+            model=model_name,
             provider=self.name,
             latency_ms=latency,
-            prompt_tokens=(int(data["prompt_eval_count"]) if data.get("prompt_eval_count") is not None else None),
-            completion_tokens=(int(data["eval_count"]) if data.get("eval_count") is not None else None),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     async def health(self) -> dict[str, Any]:
@@ -208,20 +237,33 @@ class OpenAICompatibleProvider:
             )
         try:
             data = response.json()
-            choice = (data.get("choices") or [{}])[0]
-            text = str((choice.get("message") or {}).get("content") or "").strip()
+            if not isinstance(data, dict):
+                raise ValueError("corpo não é objeto JSON")
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise ValueError("campo 'choices' ausente ou vazio")
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                raise ValueError("item de 'choices' inválido")
+            message = choice.get("message") or {}
+            if not isinstance(message, dict):
+                raise ValueError("campo 'message' inválido")
+            text = str(message.get("content") or "").strip()
+            model_name = str(data.get("model") or model)
             usage = data.get("usage") or {}
         except (ValueError, AttributeError, IndexError) as exc:
             raise ProviderError(f"{self.name}: resposta inesperada", retryable=False) from exc
+        if not isinstance(usage, dict):
+            usage = {}
         if not text:
             raise ProviderError(f"{self.name}: resposta vazia do modelo {model}")
         return RawCompletion(
             text=text,
-            model=str(data.get("model") or model),
+            model=model_name,
             provider=self.name,
             latency_ms=latency,
-            prompt_tokens=(int(usage["prompt_tokens"]) if usage.get("prompt_tokens") is not None else None),
-            completion_tokens=(int(usage["completion_tokens"]) if usage.get("completion_tokens") is not None else None),
+            prompt_tokens=_optional_token_count(usage.get("prompt_tokens")),
+            completion_tokens=_optional_token_count(usage.get("completion_tokens")),
         )
 
     async def health(self) -> dict[str, Any]:

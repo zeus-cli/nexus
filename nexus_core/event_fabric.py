@@ -731,7 +731,7 @@ class EventFabric:
         self._store = store
         self._outbox = outbox
         self._sink: EventSink = sink or _noop_sink
-        self._logger = logger or logging.getLogger("zeus.event_fabric")
+        self._logger = logger or logging.getLogger("nexus.event_fabric")
         self._batch_size = batch_size
         self._poll_interval_s = poll_interval_s
         self._backoff_base_s = backoff_base_s
@@ -973,7 +973,7 @@ class IdempotentConsumer:
         self._consumer_id = normalized
         self._handler = handler
         self._dedup_window_s = dedup_window_s
-        self._logger = logger or logging.getLogger("zeus.idempotent_consumer")
+        self._logger = logger or logging.getLogger("nexus.idempotent_consumer")
         self._lock = asyncio.Lock()
         self._processed = 0
         self._skipped = 0

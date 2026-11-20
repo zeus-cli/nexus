@@ -1,8 +1,12 @@
-# RELEASE AUDIT 1.1 — NEXUS Cognitive OS
+# RELEASE AUDIT 1.1 — NEXUS (historical release snapshot)
 
-**Date:** 2026-11-12
+**Audit date:** 2026-11-12
 **Previous release audit:** 1.0 (historical, preserved in git)
-**Verdict:** READY WITH DOCUMENTED LIMITATIONS
+**Verdict at that revision:** READY WITH DOCUMENTED LIMITATIONS
+
+> Esta auditoria é do estado pré-T6, em 2026-11-12. Ela não avalia o T6/T8 nem
+> a implantação do Acer Nitro V15 e não deve ser usada como aprovação da árvore
+> de trabalho atual. Consulte `ROADMAP.md` para o estado presente.
 
 ## 1. Architectural Consistency
 

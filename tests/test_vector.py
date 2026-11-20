@@ -53,3 +53,30 @@ def test_upsert_replaces_existing_and_delete_escapes_id(tmp_path) -> None:
     # O handle aberto antes do delete continua vendo a versão antiga da tabela.
     table = store._db.open_table("nexus_memories")
     assert table.count_rows() == 0
+
+
+def test_transient_upsert_failure_does_not_disable_store(monkeypatch) -> None:
+    store = VectorStore("unused")
+    store.embed = lambda text: np.array([1.0, 0.0], dtype=np.float32)  # type: ignore[method-assign]
+
+    class BrokenDatabase:
+        def list_tables(self):
+            raise RuntimeError("I/O temporariamente indisponível")
+
+    monkeypatch.setattr(store, "_connect", lambda: BrokenDatabase())
+
+    store.upsert("mem-1", "conteúdo")
+    assert store._available is True
+
+
+def test_transient_search_failure_does_not_disable_store(monkeypatch) -> None:
+    store = VectorStore("unused")
+
+    class BrokenDatabase:
+        def list_tables(self):
+            raise RuntimeError("I/O temporariamente indisponível")
+
+    monkeypatch.setattr(store, "_connect", lambda: BrokenDatabase())
+
+    assert store.search("consulta") == []
+    assert store._available is True

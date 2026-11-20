@@ -1,17 +1,25 @@
-//! Approval Manager do Control Plane (T4/T5).
+//! Approval Manager do Control Plane (T4/T5/T6).
 //!
-//! O T5 fecha a paridade de estado e ciclo de vida com o Python:
+//! O T5 fechou a paridade de estado e ciclo de vida com o Python:
 //! `PENDING → APPROVED|DENIED|EXPIRED`, `APPROVED → CLAIMED|REVOKED|EXPIRED`,
 //! `CLAIMED → CONSUMED`, revogação, verificação de vínculo por hash, TTL por
-//! solicitação e uso único. Persistência durável e histórico continuam
-//! pendentes: reiniciar o daemon invalida aprovações (fail-closed).
+//! solicitação e uso único.
+//!
+//! O T6 adiciona persistência durável em SQLite e o ciclo de execução:
+//! `CLAIMED → CONSUMED` acontece no `ExecutionStart`, e `PREPARED → STARTING →
+//! COMPLETED|FAILED|INTERRUPTED` fica registrado na tabela `executions`.
+//! Reiniciar o daemon não invalida mais aprovações; a falha do daemon é tratada
+//! pelo cliente Python como fail-closed.
 
+use crate::approval_store::{ApprovalStore, ExecutionRecord};
 use crate::contracts::{ApprovalDecision, ApprovalRecord, ApprovalRequest, ContractError};
-use std::collections::HashMap;
-use std::sync::Mutex;
+use crate::control_schema::SchemaError;
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_APPROVAL_TTL_SECONDS: f64 = 3600.0;
+pub const DEFAULT_ORPHAN_TIMEOUT_SECONDS: f64 = 300.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApprovalError {
@@ -33,13 +41,32 @@ pub enum ApprovalError {
     HashMismatch,
     #[error("contrato: {0}")]
     Contract(#[from] ContractError),
+    #[error("armazenamento de aprovação: {0}")]
+    Storage(String),
 }
 
-/// Registros em memória, protegidos por mutex. Reiniciar o daemon invalida
-/// aprovações — o comportamento é fail-closed, nunca fail-open.
+impl From<rusqlite::Error> for ApprovalError {
+    fn from(error: rusqlite::Error) -> Self {
+        ApprovalError::Storage(error.to_string())
+    }
+}
+
+impl From<SchemaError> for ApprovalError {
+    fn from(error: SchemaError) -> Self {
+        ApprovalError::Storage(error.to_string())
+    }
+}
+
+/// Manager de aprovações persistente.
+///
+/// A conexão SQLite é serializada pelo `ApprovalStore`; `op_lock` garante que
+/// leituras seguidas de transição (decidir, claim, consumo) não intercalem
+/// entre threads do IPC. O lock de operações é sempre adquirido antes do lock
+/// da conexão, evitando inversão de ordem.
 pub struct ApprovalManager {
-    approvals: Mutex<HashMap<String, ApprovalRecord>>,
+    store: Arc<ApprovalStore>,
     ttl_s: f64,
+    op_lock: Mutex<()>,
 }
 
 impl ApprovalManager {
@@ -48,14 +75,29 @@ impl ApprovalManager {
     }
 
     pub fn with_ttl_secs(ttl_s: f64) -> Self {
+        let store = ApprovalStore::open_in_memory().expect("abrir approval store em memória");
+        Self::with_store(Arc::new(store), ttl_s)
+    }
+
+    pub fn open<P: AsRef<Path>>(path: P, ttl_s: f64) -> Result<Self, ApprovalError> {
+        let store = ApprovalStore::open(path)?;
+        Ok(Self::with_store(Arc::new(store), ttl_s))
+    }
+
+    pub fn with_store(store: Arc<ApprovalStore>, ttl_s: f64) -> Self {
         assert!(
             ttl_s.is_finite() && ttl_s >= 0.0,
             "ttl de aprovação deve ser finito e não negativo"
         );
         Self {
-            approvals: Mutex::new(HashMap::new()),
+            store,
             ttl_s,
+            op_lock: Mutex::new(()),
         }
+    }
+
+    fn lock_ops(&self) -> MutexGuard<'_, ()> {
+        self.op_lock.lock().expect("lock de operações de approval")
     }
 
     /// Cria uma solicitação PENDING vinculada ao hash canônico da operação,
@@ -90,9 +132,8 @@ impl ApprovalManager {
         }
         let params_hash = request.params_hash()?;
         let now = unix_now();
-        let approval_id = uuid::Uuid::new_v4().simple().to_string();
         let record = ApprovalRecord {
-            approval_id: approval_id.clone(),
+            approval_id: uuid::Uuid::new_v4().simple().to_string(),
             tool_id: request.tool_id.clone(),
             params_hash,
             task_id: request.task_id.clone(),
@@ -112,11 +153,8 @@ impl ApprovalManager {
             consumed_at: None,
             risk_level: risk_level.map(str::to_string),
         };
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        if approvals.contains_key(&approval_id) {
-            return Err(ApprovalError::Invalid("colisão de approval_id".to_string()));
-        }
-        approvals.insert(approval_id, record.clone());
+        let _guard = self.lock_ops();
+        self.store.insert_approval(&record)?;
         Ok(record)
     }
 
@@ -124,11 +162,12 @@ impl ApprovalManager {
     pub fn decide(&self, decision: &ApprovalDecision) -> Result<ApprovalRecord, ApprovalError> {
         decision.validate()?;
         let now = unix_now();
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        let record = approvals
-            .get_mut(&decision.approval_id)
+        let _guard = self.lock_ops();
+        self.store.refresh_expiry(&decision.approval_id, now)?;
+        let record = self
+            .store
+            .get_approval(&decision.approval_id)?
             .ok_or_else(|| ApprovalError::NotFound(decision.approval_id.clone()))?;
-        refresh_expiry(record, now);
         match record.status.as_str() {
             "PENDING" => {}
             "APPROVED" | "DENIED" => {
@@ -137,40 +176,48 @@ impl ApprovalManager {
             "EXPIRED" => return Err(ApprovalError::Expired(decision.approval_id.clone())),
             _ => return Err(ApprovalError::NotPending(decision.approval_id.clone())),
         }
-        record.status = decision.decision.clone();
-        record.decided_at = Some(decision.timestamp);
-        record.decided_by = Some(decision.approver.clone());
-        Ok(record.clone())
+        if !self.store.set_decision(
+            &decision.approval_id,
+            &decision.decision,
+            decision.timestamp,
+            &decision.approver,
+        )? {
+            return Err(ApprovalError::NotPending(decision.approval_id.clone()));
+        }
+        self.store
+            .get_approval(&decision.approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(decision.approval_id.clone()))
     }
 
     /// Consulta o estado atual, expirando registros vencidos.
     pub fn status(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
         let now = unix_now();
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        let record = approvals
-            .get_mut(approval_id)
-            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
-        refresh_expiry(record, now);
-        Ok(record.clone())
+        let _guard = self.lock_ops();
+        self.store.refresh_expiry(approval_id, now)?;
+        self.store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))
     }
 
     /// Verifica o vínculo e consome a aprovação para uma única autorização.
     ///
-    /// O claim é atômico sob o mutex: duas chamadas concorrentes não podem
+    /// O claim é atômico no SQLite: duas chamadas concorrentes não podem
     /// consumir a mesma aprovação. A transição para CONSUMED é feita por
-    /// `mark_consumed` quando a execução começa (T6).
+    /// `start_execution` quando a execução começa.
     pub fn claim(
         &self,
         approval_id: &str,
         request: &ApprovalRequest,
     ) -> Result<ApprovalRecord, ApprovalError> {
         request.validate()?;
+        let hash = request.params_hash()?;
         let now = unix_now();
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        let record = approvals
-            .get_mut(approval_id)
+        let _guard = self.lock_ops();
+        self.store.refresh_expiry(approval_id, now)?;
+        let record = self
+            .store
+            .get_approval(approval_id)?
             .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
-        refresh_expiry(record, now);
         match record.status.as_str() {
             "APPROVED" => {}
             "EXPIRED" => return Err(ApprovalError::Expired(approval_id.to_string())),
@@ -179,11 +226,44 @@ impl ApprovalManager {
             }
             _ => return Err(ApprovalError::NotPending(approval_id.to_string())),
         }
-        if record.params_hash != request.params_hash()? {
+        if record.params_hash != hash {
             return Err(ApprovalError::HashMismatch);
         }
-        record.status = "CLAIMED".to_string();
-        Ok(record.clone())
+        if !self.store.claim(approval_id, now)? {
+            return Err(ApprovalError::NotPending(approval_id.to_string()));
+        }
+        self.store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))
+    }
+
+    /// Reivindica uma aprovação apenas pelo id, sem repetir o hash.
+    ///
+    /// Espelha `ApprovalManager.claim_approval` do Python. O chamador já fez a
+    /// verificação de vínculo (`verify_action`) e a operação é local ao mesmo
+    /// UID; o `Authorize` continua usando `claim` com hash.
+    pub fn claim_by_id(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
+        let now = unix_now();
+        let _guard = self.lock_ops();
+        self.store.refresh_expiry(approval_id, now)?;
+        let record = self
+            .store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
+        match record.status.as_str() {
+            "APPROVED" => {}
+            "EXPIRED" => return Err(ApprovalError::Expired(approval_id.to_string())),
+            "PENDING" | "DENIED" => {
+                return Err(ApprovalError::NotApproved(approval_id.to_string()))
+            }
+            _ => return Err(ApprovalError::NotPending(approval_id.to_string())),
+        }
+        if !self.store.claim(approval_id, now)? {
+            return Err(ApprovalError::NotPending(approval_id.to_string()));
+        }
+        self.store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))
     }
 
     /// Confere se o request ainda corresponde ao hash vinculado.
@@ -197,29 +277,98 @@ impl ApprovalManager {
         request: &ApprovalRequest,
     ) -> Result<bool, ApprovalError> {
         let current_hash = request.params_hash()?;
-        let approvals = self.approvals.lock().expect("lock de approvals");
-        Ok(approvals
-            .get(approval_id)
-            .is_some_and(|record| record.params_hash == current_hash))
+        let record = self.store.get_approval(approval_id)?;
+        Ok(record.is_some_and(|stored| stored.params_hash == current_hash))
     }
 
-    /// Transição `CLAIMED → CONSUMED` antes de iniciar a execução.
+    /// Transição `CLAIMED → CONSUMED` e início do ciclo de execução.
     ///
-    /// Espelha `ApprovalManager.mark_starting` do Python. Só uma aprovação
-    /// previamente reivindicada pode ser consumida; qualquer outro estado é
-    /// erro e não altera o registro.
-    pub fn mark_consumed(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
+    /// Espelha `ApprovalManager.mark_starting` do Python: só uma aprovação
+    /// previamente reivindicada pode ser consumida; a execução passa a
+    /// `STARTING` na mesma transação SQLite.
+    pub fn start_execution(
+        &self,
+        approval_id: &str,
+    ) -> Result<(ApprovalRecord, ExecutionRecord), ApprovalError> {
         let now = unix_now();
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        let record = approvals
-            .get_mut(approval_id)
+        let _guard = self.lock_ops();
+        let record = self
+            .store
+            .get_approval(approval_id)?
             .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
-        if record.status != "CLAIMED" {
+        match record.status.as_str() {
+            "CLAIMED" => {}
+            "EXPIRED" => return Err(ApprovalError::Expired(approval_id.to_string())),
+            _ => return Err(ApprovalError::NotClaimed(approval_id.to_string())),
+        }
+        if !self.store.start_execution(approval_id, now)? {
             return Err(ApprovalError::NotClaimed(approval_id.to_string()));
         }
-        record.status = "CONSUMED".to_string();
-        record.consumed_at = Some(now);
-        Ok(record.clone())
+        self.execution_pair(approval_id)
+    }
+
+    /// Mantido para paridade com o T5: consome e devolve o ApprovalRecord.
+    pub fn mark_consumed(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
+        self.start_execution(approval_id).map(|(record, _)| record)
+    }
+
+    /// Fecha a execução com `COMPLETED`, `FAILED` ou `INTERRUPTED`.
+    ///
+    /// Se a aprovação ainda estiver `CLAIMED` (chamador pulou o start), ela é
+    /// consumida nesta operação para não deixar um claim órfão. O update é
+    /// idempotente para repetição após perda de resposta do IPC.
+    pub fn complete_execution(
+        &self,
+        approval_id: &str,
+        status: &str,
+        summary: Option<&str>,
+    ) -> Result<(ApprovalRecord, ExecutionRecord), ApprovalError> {
+        if !matches!(status, "COMPLETED" | "FAILED" | "INTERRUPTED") {
+            return Err(ApprovalError::Invalid(format!(
+                "status de execução inválido: {status}"
+            )));
+        }
+        let now = unix_now();
+        let _guard = self.lock_ops();
+        let record = self
+            .store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
+        match record.status.as_str() {
+            "CLAIMED" | "CONSUMED" => {}
+            "EXPIRED" => return Err(ApprovalError::Expired(approval_id.to_string())),
+            "PENDING" | "DENIED" => {
+                return Err(ApprovalError::NotApproved(approval_id.to_string()))
+            }
+            _ => return Err(ApprovalError::NotClaimed(approval_id.to_string())),
+        }
+        self.store
+            .complete_execution(approval_id, status, summary, now)?;
+        self.execution_pair(approval_id)
+    }
+
+    /// Consulta aprovação + execução vinculada.
+    pub fn execution_status(
+        &self,
+        approval_id: &str,
+    ) -> Result<(ApprovalRecord, ExecutionRecord), ApprovalError> {
+        let _guard = self.lock_ops();
+        self.execution_pair(approval_id)
+    }
+
+    fn execution_pair(
+        &self,
+        approval_id: &str,
+    ) -> Result<(ApprovalRecord, ExecutionRecord), ApprovalError> {
+        let record = self
+            .store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
+        let execution = self
+            .store
+            .get_execution(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
+        Ok((record, execution))
     }
 
     /// Revoga uma aprovação `PENDING` ou `APPROVED`.
@@ -229,47 +378,67 @@ impl ApprovalManager {
     /// revogáveis. A checagem usa o estado armazenado, sem expirar antes,
     /// exatamente como no Python.
     pub fn revoke(&self, approval_id: &str) -> Result<ApprovalRecord, ApprovalError> {
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        let record = approvals
-            .get_mut(approval_id)
+        let _guard = self.lock_ops();
+        let record = self
+            .store
+            .get_approval(approval_id)?
             .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))?;
         if !matches!(record.status.as_str(), "PENDING" | "APPROVED") {
             return Err(ApprovalError::NotRevocable(approval_id.to_string()));
         }
-        record.status = "REVOKED".to_string();
-        Ok(record.clone())
+        if !self.store.revoke(approval_id)? {
+            return Err(ApprovalError::NotRevocable(approval_id.to_string()));
+        }
+        self.store
+            .get_approval(approval_id)?
+            .ok_or_else(|| ApprovalError::NotFound(approval_id.to_string()))
     }
 
     /// Expira solicitações pendentes/aprovadas vencidas e devolve a contagem.
     pub fn expire_stale(&self) -> usize {
         let now = unix_now();
-        let mut approvals = self.approvals.lock().expect("lock de approvals");
-        let mut expired = 0;
-        for record in approvals.values_mut() {
-            if matches!(record.status.as_str(), "PENDING" | "APPROVED") && record.expires_at <= now
-            {
-                record.status = "EXPIRED".to_string();
-                expired += 1;
-            }
+        let _guard = self.lock_ops();
+        self.store.expire_stale(now).unwrap_or(0)
+    }
+
+    /// Lista aprovações com filtro e paginação; expira PENDING antes.
+    pub fn list(
+        &self,
+        status: Option<&str>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<ApprovalRecord>, ApprovalError> {
+        let _guard = self.lock_ops();
+        if status == Some("PENDING") {
+            self.store.expire_stale(unix_now())?;
         }
-        expired
+        Ok(self.store.list_approvals(status, limit, offset)?)
+    }
+
+    /// Marca execuções antigas como `UNKNOWN` após reinício do daemon.
+    pub fn recover_orphans(&self, timeout_s: f64) -> usize {
+        let _guard = self.lock_ops();
+        self.store
+            .recover_orphans(unix_now(), timeout_s)
+            .unwrap_or(0)
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.approvals.lock().expect("lock de approvals").len()
+        self.store.count().unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub fn force_expires_at(&self, approval_id: &str, expires_at: f64) {
+        self.store
+            .set_expires_at(approval_id, expires_at)
+            .expect("forçar expiração");
     }
 }
 
 impl Default for ApprovalManager {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn refresh_expiry(record: &mut ApprovalRecord, now: f64) {
-    if matches!(record.status.as_str(), "PENDING" | "APPROVED") && record.expires_at <= now {
-        record.status = "EXPIRED".to_string();
     }
 }
 
@@ -464,17 +633,8 @@ mod tests {
         manager.revoke(&revoked.approval_id).unwrap();
         let denied = manager.request(&req, Some("HIGH")).unwrap();
         decide(&manager, &denied.approval_id, "DENIED");
-        {
-            let mut approvals = manager.approvals.lock().expect("lock de approvals");
-            approvals
-                .get_mut(&revoked.approval_id)
-                .expect("revogada")
-                .expires_at = 0.0;
-            approvals
-                .get_mut(&denied.approval_id)
-                .expect("negada")
-                .expires_at = 0.0;
-        }
+        manager.force_expires_at(&revoked.approval_id, 0.0);
+        manager.force_expires_at(&denied.approval_id, 0.0);
 
         assert_eq!(manager.expire_stale(), 0);
         assert_eq!(
@@ -583,6 +743,95 @@ mod tests {
         ));
         assert_eq!(manager.expire_stale(), 0);
         assert_eq!(manager.len(), 0);
+    }
+
+    #[test]
+    fn persistent_store_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.db");
+        let approval_id;
+        {
+            let manager = ApprovalManager::open(&path, DEFAULT_APPROVAL_TTL_SECONDS).unwrap();
+            let req = request(json!({"args": ["--safe"]}));
+            let record = manager.request(&req, Some("HIGH")).unwrap();
+            approval_id = record.approval_id.clone();
+            decide(&manager, &approval_id, "APPROVED");
+            manager.claim(&approval_id, &req).unwrap();
+            manager.mark_consumed(&approval_id).unwrap();
+            let (approval, execution) = manager.execution_status(&approval_id).unwrap();
+            assert_eq!(approval.status, "CONSUMED");
+            assert_eq!(execution.status, "STARTING");
+        }
+
+        let manager = ApprovalManager::open(&path, DEFAULT_APPROVAL_TTL_SECONDS).unwrap();
+        let record = manager.status(&approval_id).unwrap();
+        assert_eq!(record.status, "CONSUMED");
+        assert!(record.consumed_at.is_some());
+        let history = manager.list(Some("CONSUMED"), 10, 0).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].approval_id, approval_id);
+    }
+
+    #[test]
+    fn execution_lifecycle_is_persisted_and_completion_is_idempotent() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({}));
+        let record = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &record.approval_id, "APPROVED");
+        manager.claim(&record.approval_id, &req).unwrap();
+
+        let (approval, execution) = manager.execution_status(&record.approval_id).unwrap();
+        assert_eq!(approval.status, "CLAIMED");
+        assert_eq!(execution.status, "PREPARED");
+        assert!(execution.started_at.is_some());
+
+        let (approval, execution) = manager.start_execution(&record.approval_id).unwrap();
+        assert_eq!(approval.status, "CONSUMED");
+        assert_eq!(execution.status, "STARTING");
+        assert!(approval.consumed_at.is_some());
+
+        let (approval, execution) = manager
+            .complete_execution(&record.approval_id, "COMPLETED", Some("ok"))
+            .unwrap();
+        assert_eq!(approval.status, "CONSUMED");
+        assert_eq!(execution.status, "COMPLETED");
+        assert_eq!(execution.result_summary.as_deref(), Some("ok"));
+        assert!(execution.completed_at.is_some());
+
+        let (_, repeated) = manager
+            .complete_execution(&record.approval_id, "COMPLETED", Some("ok"))
+            .unwrap();
+        assert_eq!(repeated.status, "COMPLETED");
+    }
+
+    #[test]
+    fn recover_orphans_marks_old_executions_unknown() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({}));
+        let record = manager.request(&req, Some("HIGH")).unwrap();
+        decide(&manager, &record.approval_id, "APPROVED");
+        manager.claim(&record.approval_id, &req).unwrap();
+
+        assert_eq!(manager.recover_orphans(0.0), 1);
+        let (approval, execution) = manager.execution_status(&record.approval_id).unwrap();
+        assert_eq!(approval.status, "CLAIMED");
+        assert_eq!(execution.status, "UNKNOWN");
+        assert_eq!(manager.recover_orphans(0.0), 0);
+    }
+
+    #[test]
+    fn execution_completion_rejects_unclaimed_approval() {
+        let manager = ApprovalManager::new();
+        let req = request(json!({}));
+        let record = manager.request(&req, Some("HIGH")).unwrap();
+        assert!(matches!(
+            manager.complete_execution(&record.approval_id, "COMPLETED", None),
+            Err(ApprovalError::NotApproved(_))
+        ));
+        assert!(matches!(
+            manager.complete_execution(&record.approval_id, "RUNNING", None),
+            Err(ApprovalError::Invalid(_))
+        ));
     }
 
     fn lifecycle_fixture() -> serde_json::Value {

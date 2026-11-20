@@ -38,7 +38,10 @@ impl HealthChecker {
         }
     }
 
-    pub fn check(&self, resource_stats: Option<&crate::resources::monitor::ResourceStats>) -> HealthStatus {
+    pub fn check(
+        &self,
+        resource_stats: Option<&crate::resources::monitor::ResourceStats>,
+    ) -> HealthStatus {
         let mut checks = Vec::new();
         let mut overall_ok = true;
 
@@ -57,8 +60,10 @@ impl HealthChecker {
                 ok: ram_ok && swap_ok,
                 detail: Some(format!(
                     "RAM {}% ({}), swap {}% ({})",
-                    res.ram.percent.round() as u64, res.ram.status,
-                    res.swap.percent.round() as u64, res.swap.status
+                    res.ram.percent.round() as u64,
+                    res.ram.status,
+                    res.swap.percent.round() as u64,
+                    res.swap.status
                 )),
             });
         }
@@ -96,6 +101,9 @@ mod tests {
         let status = hc.check(None);
         assert_eq!(status.status, "ok");
         assert_eq!(status.version, "0.1.0");
-        assert!(status.checks.iter().any(|c| c.name == "configuracao" && c.ok));
+        assert!(status
+            .checks
+            .iter()
+            .any(|c| c.name == "configuracao" && c.ok));
     }
 }

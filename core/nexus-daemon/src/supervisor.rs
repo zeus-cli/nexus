@@ -107,7 +107,13 @@ impl Supervisor {
                 }
             };
             let _pid = _child.id();
-            let _ = (name_owned, services_clone, _pid, _auto_restart, _max_restarts);
+            let _ = (
+                name_owned,
+                services_clone,
+                _pid,
+                _auto_restart,
+                _max_restarts,
+            );
             // Nota: atualização assíncrona do status via RwLock requer um handle
             // do runtime; mantido como placeholder na Fase 1.
         });

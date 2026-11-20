@@ -135,18 +135,24 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
     if !path.is_file() {
         return Err(ConfigError::NotFound(path.to_path_buf()));
     }
-    let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::IoError(path.to_path_buf(), e.to_string()))?;
-    let config: Config = toml::from_str(&contents).map_err(|e| ConfigError::InvalidToml(path.to_path_buf(), e.to_string()))?;
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| ConfigError::IoError(path.to_path_buf(), e.to_string()))?;
+    let config: Config = toml::from_str(&contents)
+        .map_err(|e| ConfigError::InvalidToml(path.to_path_buf(), e.to_string()))?;
     validate(&config)?;
     Ok(config)
 }
 
 fn validate(config: &Config) -> Result<(), ConfigError> {
     if config.nexus.name.is_empty() {
-        return Err(ConfigError::Invalid("nexus.name não pode ser vazio".to_string()));
+        return Err(ConfigError::Invalid(
+            "nexus.name não pode ser vazio".to_string(),
+        ));
     }
     if config.paths.data_dir.is_empty() {
-        return Err(ConfigError::Invalid("paths.data_dir não pode ser vazio".to_string()));
+        return Err(ConfigError::Invalid(
+            "paths.data_dir não pode ser vazio".to_string(),
+        ));
     }
     let level = config.logging.level.to_uppercase();
     match level.as_str() {
@@ -159,14 +165,20 @@ fn validate(config: &Config) -> Result<(), ConfigError> {
         }
     }
     if config.ipc.socket_path.is_empty() {
-        return Err(ConfigError::Invalid("ipc.socket_path não pode ser vazio".to_string()));
+        return Err(ConfigError::Invalid(
+            "ipc.socket_path não pode ser vazio".to_string(),
+        ));
     }
     Ok(())
 }
 
 /// Resolve caminhos relativos em relação ao diretório raiz (pai do diretório `config/`).
 pub fn resolve_root(source: &Path) -> PathBuf {
-    if source.parent().map(|p| p.ends_with("config")).unwrap_or(false) {
+    if source
+        .parent()
+        .map(|p| p.ends_with("config"))
+        .unwrap_or(false)
+    {
         source.parent().unwrap().to_path_buf()
     } else {
         source.to_path_buf()
@@ -235,6 +247,12 @@ socket_path = "data/run/nexus-daemon.sock"
         // Aqui apenas confirmamos que o parsing TOML funciona; o nível inválido pega na validação.
         let config = result.unwrap();
         let level = config.logging.level.to_uppercase();
-        assert!(level != "DEBUG" && level != "INFO" && level != "WARNING" && level != "ERROR" && level != "CRITICAL");
+        assert!(
+            level != "DEBUG"
+                && level != "INFO"
+                && level != "WARNING"
+                && level != "ERROR"
+                && level != "CRITICAL"
+        );
     }
 }

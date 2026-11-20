@@ -35,7 +35,9 @@ target/
 CACHEDIR.TAG
 
 # --- Dados/runtime do NEXUS (não versionar banco, logs, segredos) ---
+config/backup.env
 data/databases/
+data/cache/
 data/logs/
 data/backups/
 data/vectors/

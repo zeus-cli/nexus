@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -11,6 +12,18 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_TASKS_DIR = Path("data") / "tasks"
+
+
+def _looks_like_encrypted_payload(raw: str) -> bool:
+    """Identifies opaque base64 ciphertext when the decryption key is absent."""
+    candidate = raw.strip()
+    if not candidate:
+        return False
+    try:
+        decoded = base64.b64decode(candidate, altchars=b"-_", validate=True)
+    except (ValueError, base64.binascii.Error):
+        return False
+    return len(decoded) >= 16
 
 
 class _TaskCrypto:
@@ -50,7 +63,7 @@ class _TaskCrypto:
         if self._fernet is not None:
             try:
                 return self._fernet.decrypt(data.encode()).decode()
-            except Exception as exc:  # noqa: BLE001 - falha de cripto vira estado inválido
+            except Exception as exc:  # falha de cripto vira estado inválido
                 raise ValueError("falha ao decifrar estado da tarefa") from exc
         if self._key is not None:
             return self._xor(data, decrypt=True)
@@ -134,6 +147,17 @@ class TaskStore:
             os.chmod(temp_path, 0o600)
         temp_path.replace(path)
 
+    def _quarantine(self, path: Path) -> None:
+        """Preserva um arquivo ilegível em vez de apagá-lo silenciosamente."""
+        try:
+            target = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
+            path.replace(target)
+            os.chmod(target, 0o600)
+        except OSError:
+            # Corrida com outro processo ou disco somente leitura: o importante
+            # é nunca transformar uma falha de leitura em perda definitiva.
+            pass
+
     def load_task(self, task_id: str) -> dict[str, Any] | None:
         """Loads task state and verifies integrity checksum."""
         if not task_id.isalnum():
@@ -144,26 +168,60 @@ class TaskStore:
             return None
 
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = f.read()
-
-            if self._crypto._key is not None:
-                raw = self._crypto.decrypt(raw)
-
-            wrapped = json.loads(raw)
-            encrypted = wrapped.get("encrypted", False)
-
-            if encrypted and self._crypto._key is None:
-                raise ValueError("Task store encrypted but no decryption key provided")
-
-            data_str = json.dumps(wrapped["data"], indent=2, sort_keys=True)
-            if self._calculate_checksum(data_str) != wrapped["checksum"]:
-                raise ValueError("Task store integrity check failed: checksum mismatch")
-
-            return wrapped["data"]
-        except (json.JSONDecodeError, KeyError, ValueError):
-            path.unlink(missing_ok=True)
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
             return None
+
+        if self._crypto._key is not None:
+            try:
+                raw = self._crypto.decrypt(raw)
+            except (ValueError, UnicodeDecodeError):
+                # Chave errada ou backend indisponível não é corrupção do
+                # arquivo: preserve-o para quando a chave correta voltar.
+                return None
+
+        # O fallback XOR não é autenticado: sem uma chave correta não há como
+        # distinguir "chave errada" de "arquivo corrompido". Nesse caso,
+        # preserve o arquivo em vez de arriscar apagar estado recuperável.
+        preserve_on_failure = self._crypto._key is not None and self._crypto._fernet is None
+
+        try:
+            wrapped = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # Fernet and the legacy XOR fallback both produce opaque base64.
+            # Without a key, invalid JSON may be recoverable ciphertext.
+            if not preserve_on_failure and not (
+                self._crypto._key is None and _looks_like_encrypted_payload(raw)
+            ):
+                self._quarantine(path)
+            return None
+        if not isinstance(wrapped, dict):
+            if not preserve_on_failure:
+                self._quarantine(path)
+            return None
+
+        if wrapped.get("encrypted", False) and self._crypto._key is None:
+            # Configuração sem chave: o conteúdo pode estar íntegro, apenas
+            # ilegível neste processo. Não destrua o estado.
+            return None
+
+        try:
+            data = wrapped["data"]
+            checksum = wrapped["checksum"]
+            data_str = json.dumps(data, indent=2, sort_keys=True)
+        except (KeyError, TypeError, ValueError):
+            if not preserve_on_failure:
+                self._quarantine(path)
+            return None
+        if not isinstance(data, dict) or not isinstance(checksum, str):
+            if not preserve_on_failure:
+                self._quarantine(path)
+            return None
+        if self._calculate_checksum(data_str) != checksum:
+            if not preserve_on_failure:
+                self._quarantine(path)
+            return None
+        return data
 
     def delete_task(self, task_id: str) -> None:
         if not task_id.isalnum():
@@ -180,7 +238,14 @@ class TaskStore:
         now = time.time()
         count = 0
         for path in self._store_dir.glob("*.json"):
-            if now - path.stat().st_mtime > (retention_days * 86400):
-                path.unlink()
+            try:
+                stale = now - path.stat().st_mtime > (retention_days * 86400)
+            except OSError:
+                continue
+            if stale:
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
                 count += 1
         return count

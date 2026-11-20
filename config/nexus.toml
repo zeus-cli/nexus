@@ -28,6 +28,14 @@ token_file = "data/secrets/api_token"
 [safety]
 autonomy_level = 1 # Modo Assistência: permite leitura e escrita básica
 
+[control_plane]
+# T6: quando habilitado, o daemon Rust é a autoridade final de execução e o
+# store SQLite de aprovações. Falha do daemon nega execução (fail-closed).
+# Mantenha desabilitado até o daemon estar operacional no host.
+enabled = false
+socket_path = "data/run/nexus-daemon.sock"
+timeout_s = 5.0
+
 [llm]
 # Orçamento de contexto reduzido para economizar RAM (evita travamentos com o browser)
 max_context_tokens = 2048

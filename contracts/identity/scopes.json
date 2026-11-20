@@ -1,0 +1,147 @@
+{
+  "catalog_version": "1.0.0",
+  "contract_version": "1.0.0",
+  "description": "Catálogo normativo de escopos de identidade do NEXUS (T8). Fonte da verdade para Python, Rust e clientes.",
+  "scopes": [
+    {
+      "id": "identity.self.read",
+      "category": "identity",
+      "description": "Ver o próprio principal, dispositivos e sessões."
+    },
+    {
+      "id": "identity.principals.read",
+      "category": "identity",
+      "description": "Listar principals, dispositivos e eventos de auditoria de identidade."
+    },
+    {
+      "id": "identity.principals.manage",
+      "category": "identity",
+      "description": "Criar, suspender, revogar e alterar principals."
+    },
+    {
+      "id": "identity.devices.read",
+      "category": "identity",
+      "description": "Listar dispositivos pareados."
+    },
+    {
+      "id": "identity.devices.manage",
+      "category": "identity",
+      "description": "Parear, renomear e revogar dispositivos."
+    },
+    {
+      "id": "identity.pairing.create",
+      "category": "identity",
+      "description": "Criar sessões de pairing e emitir QR/código."
+    },
+    {
+      "id": "security.approvals.read.self",
+      "category": "security",
+      "description": "Ver as próprias solicitações de aprovação."
+    },
+    {
+      "id": "security.approvals.read.all",
+      "category": "security",
+      "description": "Ver todas as solicitações de aprovação."
+    },
+    {
+      "id": "security.approvals.decide.self",
+      "category": "security",
+      "description": "Decidir solicitações de aprovação próprias."
+    },
+    {
+      "id": "security.approvals.decide.others",
+      "category": "security",
+      "description": "Decidir solicitações de aprovação de terceiros."
+    },
+    {
+      "id": "tools.read",
+      "category": "tools",
+      "description": "Executar ferramentas de leitura."
+    },
+    {
+      "id": "tools.write",
+      "category": "tools",
+      "description": "Executar ferramentas de escrita."
+    },
+    {
+      "id": "tools.execute",
+      "category": "tools",
+      "description": "Executar processos e ferramentas de execução."
+    },
+    {
+      "id": "memory.read.self",
+      "category": "memory",
+      "description": "Ler a memória privada do próprio principal."
+    },
+    {
+      "id": "memory.write.self",
+      "category": "memory",
+      "description": "Escrever na memória privada do próprio principal."
+    },
+    {
+      "id": "memory.read.shared",
+      "category": "memory",
+      "description": "Ler a memória compartilhada da família."
+    },
+    {
+      "id": "memory.write.shared",
+      "category": "memory",
+      "description": "Escrever na memória compartilhada da família."
+    },
+    {
+      "id": "memory.read.all",
+      "category": "memory",
+      "description": "Ler memória de qualquer principal (administração)."
+    },
+    {
+      "id": "memory.delete.any",
+      "category": "memory",
+      "description": "Apagar memória de qualquer principal (administração)."
+    },
+    {
+      "id": "agents.read",
+      "category": "agents",
+      "description": "Listar agentes e seus estados."
+    },
+    {
+      "id": "agents.spawn",
+      "category": "agents",
+      "description": "Criar agentes subordinados ao próprio principal."
+    },
+    {
+      "id": "agents.manage",
+      "category": "agents",
+      "description": "Suspender, retomar e encerrar agentes de qualquer principal."
+    },
+    {
+      "id": "simulations.run",
+      "category": "simulations",
+      "description": "Criar e executar simulações."
+    },
+    {
+      "id": "llm.local",
+      "category": "llm",
+      "description": "Usar modelos de inferência locais."
+    },
+    {
+      "id": "llm.remote",
+      "category": "llm",
+      "description": "Enviar dados para provedores de inferência remotos autorizados."
+    },
+    {
+      "id": "system.status",
+      "category": "system",
+      "description": "Consultar health, diagnóstico e estado operacional."
+    },
+    {
+      "id": "system.backup",
+      "category": "system",
+      "description": "Executar e restaurar backups."
+    },
+    {
+      "id": "system.admin",
+      "category": "system",
+      "description": "Manutenção administrativa do host e do control plane."
+    }
+  ]
+}

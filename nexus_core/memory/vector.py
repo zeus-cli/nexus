@@ -58,8 +58,11 @@ class VectorStore:
             import lancedb
 
             self._db = lancedb.connect(self._data_dir)
-        except Exception:  # noqa: BLE001 - vetor é opcional
+        except ImportError:
+            # Dependência ausente é definitiva: não vale repetir a cada chamada.
             self._available = False
+            self._db = None
+        except Exception:  # noqa: BLE001 - falha transitória do banco é opcional
             self._db = None
         return self._db
 
@@ -147,7 +150,7 @@ class VectorStore:
         try:
             vector = self.embed(text)
         except Exception:  # noqa: BLE001 - vetor é opcional
-            self._available = False
+            # Falha pontual de embedding não deve desligar o store para sempre.
             return
         database = self._connect()
         if database is None:
@@ -165,7 +168,9 @@ class VectorStore:
                 table.delete(f"memory_id = {self._literal(memory_id)}")
                 table.add([{"memory_id": memory_id, "vector": vector}])
         except Exception:  # noqa: BLE001 - vetor é opcional
-            self._available = False
+            # Erro de escrita é degradado por chamada; a próxima tentativa
+            # pode funcionar (lock, I/O transitório, tabela recém-criada).
+            return
 
     def search(self, query_text: str, limit: int = 10) -> list[VectorResult]:
         """Semantic search returning the most relevant memory IDs.
@@ -182,7 +187,6 @@ class VectorStore:
                 return []
             query_vec = self.embed(query_text)
         except Exception:  # noqa: BLE001 - vetor é opcional
-            self._available = False
             return []
         try:
             table = database.open_table(self._table_name)
@@ -192,7 +196,6 @@ class VectorStore:
                 for _, row in results.iterrows()
             ]
         except Exception:  # noqa: BLE001 - vetor é opcional
-            self._available = False
             return []
 
     def delete(self, memory_id: str) -> None:
@@ -210,7 +213,7 @@ class VectorStore:
                 table = database.open_table(self._table_name)
                 table.delete(f"memory_id = {self._literal(memory_id)}")
         except Exception:  # noqa: BLE001 - vetor é opcional
-            self._available = False
+            return
 
     def aclose(self) -> None:
         pass

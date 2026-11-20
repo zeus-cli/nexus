@@ -204,10 +204,18 @@ class MemoryStore:
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
 
         results: list[MemoryRecord] = []
-        for mid in sorted_ids[:limit]:
+        now = datetime.now(UTC)
+        for mid in sorted_ids:
             rec = self.get(mid)
-            if rec and (kind is None or rec.kind == kind):
-                results.append(rec)
+            if rec is None:
+                continue
+            if kind is not None and rec.kind != kind:
+                continue
+            if rec.expires_at is not None and rec.expires_at <= now:
+                continue
+            results.append(rec)
+            if len(results) >= limit:
+                break
 
         return results
 
@@ -238,10 +246,16 @@ class MemoryStore:
         except Exception:  # noqa: BLE001 - vetor é opcional, busca semântica é best-effort
             return []
         records: list[MemoryRecord] = []
+        now = datetime.now(UTC)
         for vr in vector_results:
             rec = self.get(vr.memory_id)
-            if rec and (kind is None or rec.kind == kind):
-                records.append(rec)
+            if rec is None:
+                continue
+            if kind is not None and rec.kind != kind:
+                continue
+            if rec.expires_at is not None and rec.expires_at <= now:
+                continue
+            records.append(rec)
         return records
 
     def delete(self, memory_id: str) -> bool:

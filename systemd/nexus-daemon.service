@@ -1,0 +1,28 @@
+[Unit]
+Description=NEXUS — Control Plane autoritativo (daemon Rust)
+Documentation=file:///home/nexus/Documentos/nexus/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documentos/nexus
+Environment=NEXUS_CONFIG=%h/Documentos/nexus/config/nexus.toml
+ExecStart=%h/Documentos/nexus/core/nexus-daemon/target/release/nexus-daemon
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+
+# Endurecimento: o daemon só escreve em data/ e só usa IPC local (UDS) + SQLite.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Documentos/nexus/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target

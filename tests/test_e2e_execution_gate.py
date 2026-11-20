@@ -101,8 +101,8 @@ async def test_bootstrap_executes_low_risk_through_gate_without_phantom_run():
             assert runtime.automation._autonomy_level == 1
             assert runtime.config.safety.autonomy_level == 1
             assert captured["autonomy_level"] == 1
-            assert captured["execution_mode"] == ExecutionMode.HOST.value
-            assert captured["access_level"] == AccessLevel.READ.value
+            assert captured["execution_mode"] == ExecutionMode.HOST.name
+            assert captured["access_level"] == AccessLevel.READ.name
 
             executions = runtime.execution_gate.list_executions()
             assert len(executions) == 1

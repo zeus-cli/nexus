@@ -49,6 +49,11 @@ class EventStore:
     def database(self) -> Database:
         return self._db
 
+    @property
+    def query_limit(self) -> int:
+        """Limite máximo de linhas que :meth:`query` retorna por página."""
+        return self._query_limit
+
     # -- escrita -------------------------------------------------------------
     def append(self, event: Event) -> tuple[Event, bool]:
         """Persiste ``event``; retorna ``(evento_armazenado, inserido)``.

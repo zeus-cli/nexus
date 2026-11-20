@@ -23,10 +23,11 @@ impl Pattern {
             return Ok(Pattern::Prefix(rest.to_string()));
         }
         // validação básica do kind exato
-        if !pattern
-            .split('.')
-            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
-        {
+        if !pattern.split('.').all(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        }) {
             return Err(EventError::InvalidKind(pattern.to_string()));
         }
         Ok(Pattern::Exact(pattern.to_string()))
@@ -82,7 +83,11 @@ impl EventBus {
     }
 
     /// Inscreve um handler (canal) por padrão. Retorna o id da assinatura.
-    pub async fn subscribe(&self, pattern: &str, sender: tokio::sync::mpsc::UnboundedSender<Event>) -> String {
+    pub async fn subscribe(
+        &self,
+        pattern: &str,
+        sender: tokio::sync::mpsc::UnboundedSender<Event>,
+    ) -> String {
         let pattern = Pattern::new(pattern).expect("padrão de assinatura inválido");
         let id = uuid::Uuid::new_v4().to_string();
         let sub = Subscription {
@@ -144,8 +149,8 @@ impl EventBus {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::Severity;
+    use super::*;
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -168,7 +173,9 @@ mod tests {
         assert!(Pattern::new("system.*").unwrap().matches("system")); // prefixo casa com o próprio prefixo
         assert!(!Pattern::new("system.*").unwrap().matches("systemx"));
         assert!(Pattern::new("*").unwrap().matches("anything"));
-        assert!(Pattern::new("agent.task.started").unwrap().matches("agent.task.started"));
+        assert!(Pattern::new("agent.task.started")
+            .unwrap()
+            .matches("agent.task.started"));
     }
 
     #[tokio::test]
@@ -179,7 +186,12 @@ mod tests {
         bus.subscribe("system.*", tx1).await;
         bus.subscribe("agent.*", tx2).await;
 
-        bus.publish(crate::events::types::Event::new("system.started", "t", serde_json::json!({}))).await;
+        bus.publish(crate::events::types::Event::new(
+            "system.started",
+            "t",
+            serde_json::json!({}),
+        ))
+        .await;
 
         // Só rx1 deve receber (system.started casa com system.*).
         let _ = rx1.recv().await;
